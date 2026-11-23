@@ -39,6 +39,7 @@ import { ReferralProgramCard } from './components/ReferralProgramCard';
 import { ZipFilenameText } from './components/ZipFilenameText';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { CountrySelector } from './components/CountrySelector';
+import { CatalogSearchBar } from './components/CatalogSearchBar';
 import {
   getCountryByCode,
   loadSelectedCountryCode,
@@ -127,6 +128,7 @@ export default function App() {
   const [isDirectCheckoutOpen, setIsDirectCheckoutOpen] = useState<boolean>(false);
   const [requestedZips, setRequestedZips] = useState<string[]>(() => loadRequestedZipNames());
   const [requestingZip, setRequestingZip] = useState<string | null>(null);
+  const [catalogSearch, setCatalogSearch] = useState<string>('');
 
   const handleSelectCountry = useCallback(
     (code: string) => {
@@ -239,6 +241,70 @@ export default function App() {
     );
     return [...ownerComingSoon, ...dynamicCountryPacks];
   }, [allPacks, selectedCountryCode]);
+
+  const normalizedCatalogQuery = useMemo(
+    () =>
+      catalogSearch
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim(),
+    [catalogSearch]
+  );
+
+  const normalizeForSearch = useCallback((text?: string) => {
+    if (!text) return '';
+    return text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }, []);
+
+  const matchingTracksByPackId = useMemo(() => {
+    const map = new Map<string, MusicPack['tracks']>();
+    if (!normalizedCatalogQuery) return map;
+    for (const pack of availablePacks) {
+      const matched = (pack.tracks || []).filter((track) => {
+        const hay = normalizeForSearch(
+          `${track.title || ''} ${track.artist || ''} ${track.name || ''} ${track.mixType || ''}`
+        );
+        return hay.includes(normalizedCatalogQuery);
+      });
+      if (matched.length > 0) {
+        map.set(pack.id, matched);
+      }
+    }
+    return map;
+  }, [availablePacks, normalizedCatalogQuery, normalizeForSearch]);
+
+  const filteredAvailablePacks = useMemo(() => {
+    if (!normalizedCatalogQuery) return availablePacks;
+    return availablePacks.filter((pack) => {
+      const folderHay = normalizeForSearch(
+        `${pack.title} ${pack.filename || ''} ${pack.genre} ${pack.subtitle}`
+      );
+      if (folderHay.includes(normalizedCatalogQuery)) return true;
+      return matchingTracksByPackId.has(pack.id);
+    });
+  }, [availablePacks, normalizedCatalogQuery, normalizeForSearch, matchingTracksByPackId]);
+
+  const filteredComingSoonPacks = useMemo(() => {
+    if (!normalizedCatalogQuery) return trendingComingSoonPacks;
+    return trendingComingSoonPacks.filter((pack) => {
+      const hay = normalizeForSearch(
+        `${pack.title} ${pack.filename || ''} ${pack.genre} ${pack.subtitle}`
+      );
+      return hay.includes(normalizedCatalogQuery);
+    });
+  }, [trendingComingSoonPacks, normalizedCatalogQuery, normalizeForSearch]);
+
+  const totalMatchingTracksCount = useMemo(() => {
+    let total = 0;
+    for (const tracks of matchingTracksByPackId.values()) {
+      total += tracks.length;
+    }
+    return total;
+  }, [matchingTracksByPackId]);
 
   const activePacksCount = availablePacks.length;
   const comingSoonPacksCount = trendingComingSoonPacks.length;
@@ -959,7 +1025,7 @@ export default function App() {
         {/* Clean .ZIP Folder Compact Aligned Rows */}
         <section id="pake-mizik" className="py-12 sm:py-16 border-b border-[#363B44]">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
               <div>
                 <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#F3F4F6] tracking-tight tabular-nums">
                   Tout Folder Mizik .ZIP yo ({activePacksCount} Disponib · {comingSoonPacksCount} An
@@ -972,27 +1038,55 @@ export default function App() {
               </div>
             </div>
 
+            {/* Real-time Music & Folder Search Bar with Web Speech API Voice Search (🎙️) */}
+            <CatalogSearchBar
+              value={catalogSearch}
+              onChange={setCatalogSearch}
+              totalMatchingFolders={filteredAvailablePacks.length + filteredComingSoonPacks.length}
+              totalMatchingTracks={totalMatchingTracksCount}
+            />
+
             {/* 1. REAL OWNER DOWNLOADABLE .ZIP FOLDERS AT THE TOP */}
             <div className="mb-12">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
                 <div className="inline-flex items-center gap-2 rounded-xl bg-[#10B981]/15 border border-[#10B981]/40 px-3.5 py-1.5 text-xs font-extrabold text-emerald-300">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  <span>✅ DISPONIB KOUNYE A ({activePacksCount} Folder .ZIP Pare)</span>
+                  <span>
+                    ✅ DISPONIB KOUNYE A (
+                    {normalizedCatalogQuery
+                      ? `${filteredAvailablePacks.length} / ${activePacksCount}`
+                      : activePacksCount}{' '}
+                    Folder .ZIP Pare)
+                  </span>
                 </div>
               </div>
 
-              {availablePacks.length === 0 ? (
-                <div className="rounded-2xl border border-[#363B44] bg-[#262A30] p-8 text-center space-y-2">
+              {filteredAvailablePacks.length === 0 ? (
+                <div className="rounded-2xl border border-[#363B44] bg-[#262A30] p-8 text-center space-y-3">
                   <FolderArchive className="h-9 w-9 text-[#9CA3AF] mx-auto" />
                   <p className="text-sm font-semibold text-[#F3F4F6]">
-                    Pa gen okenn folder .ZIP pare pou telechaje pou moman an.
+                    {normalizedCatalogQuery
+                      ? `Pa gen okenn folder oswa mizik ki koresponn ak « ${catalogSearch.trim()} ».`
+                      : 'Pa gen okenn folder .ZIP pare pou telechaje pou moman an.'}
                   </p>
+                  {normalizedCatalogQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setCatalogSearch('')}
+                      className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-[#10B981] hover:bg-[#059669] text-[#0B1410] text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Efase Rechèch la
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {availablePacks.map((pack) => {
+                  {filteredAvailablePacks.map((pack) => {
                     const isPackaging = packagingPackId === pack.id;
                     const zipFilename = formatZipFolderFilename(pack);
+                    const matchedTracks = normalizedCatalogQuery
+                      ? matchingTracksByPackId.get(pack.id) || []
+                      : [];
                     void colorVersion;
 
                     return (
@@ -1023,11 +1117,32 @@ export default function App() {
                               <span className="text-xs text-[#9CA3AF] font-medium">
                                 {pack.genre}
                               </span>
+                              {matchedTracks.length > 0 && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 text-[11px] font-semibold">
+                                  🎵 {matchedTracks.length} mizik jwenn
+                                </span>
+                              )}
                             </div>
 
                             <h3 className="mt-1 font-mono text-sm sm:text-base font-bold text-[#F3F4F6] tracking-tight truncate">
                               <ZipFilenameText filename={zipFilename} />
                             </h3>
+
+                            {matchedTracks.length > 0 && (
+                              <p className="mt-1 text-xs text-emerald-200/90 truncate">
+                                {matchedTracks
+                                  .slice(0, 3)
+                                  .map((t) =>
+                                    t.artist && t.artist !== 'Wesley VIP'
+                                      ? `${t.artist} - ${t.title}`
+                                      : t.title
+                                  )
+                                  .join(' · ')}
+                                {matchedTracks.length > 3
+                                  ? ` (+${matchedTracks.length - 3} lòt)`
+                                  : ''}
+                              </p>
+                            )}
                           </div>
                         </div>
 
@@ -1100,7 +1215,11 @@ export default function App() {
                     </span>
                   </div>
                   <h3 className="font-display text-xl sm:text-2xl font-bold text-[#F3F4F6] tracking-tight">
-                    🔥 TANDANS NAN PEYI W ({comingSoonPacksCount} Pake .ZIP An Preparasyon)
+                    🔥 TANDANS NAN PEYI W (
+                    {normalizedCatalogQuery
+                      ? `${filteredComingSoonPacks.length} / ${comingSoonPacksCount}`
+                      : comingSoonPacksCount}{' '}
+                    Pake .ZIP An Preparasyon)
                   </h3>
                   <p className="mt-1.5 text-xs sm:text-sm text-[#9CA3AF] max-w-2xl">
                     Pake ki pi cho yo pou{' '}
@@ -1113,8 +1232,13 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="space-y-3">
-                {trendingComingSoonPacks.map((pack) => {
+              {filteredComingSoonPacks.length === 0 ? (
+                <div className="rounded-2xl border border-[#363B44] bg-[#262A30] p-6 text-center text-xs sm:text-sm text-[#9CA3AF]">
+                  Pa gen okenn pake an preparasyon ki koresponn ak « {catalogSearch.trim()} ».
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredComingSoonPacks.map((pack) => {
                   const zipFilename = formatZipFolderFilename(pack);
                   const alreadyRequested = requestedZips.includes(zipFilename);
                   const isSending = requestingZip === zipFilename;
@@ -1172,7 +1296,8 @@ export default function App() {
                     </article>
                   );
                 })}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         </section>
