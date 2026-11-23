@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Flame,
   Trash2,
+  Megaphone,
 } from 'lucide-react';
 import {
   ACTIVE_KEY_STORAGE_KEY,
@@ -70,6 +71,12 @@ import {
   saveActiveCheckoutOrderId,
   subscribePaymentOrderByIdRealtime,
 } from './data/paymentOrders';
+import {
+  SiteAnnouncement,
+  fetchSiteAnnouncementRemote,
+  loadLocalSiteAnnouncement,
+  subscribeSiteAnnouncementRealtime,
+} from './data/siteAnnouncement';
 
 const ADMIN_SESSION_STORAGE_KEY = 'wesley_admin_auth_session_v1';
 
@@ -129,6 +136,9 @@ export default function App() {
   const [requestedZips, setRequestedZips] = useState<string[]>(() => loadRequestedZipNames());
   const [requestingZip, setRequestingZip] = useState<string | null>(null);
   const [catalogSearch, setCatalogSearch] = useState<string>('');
+  const [siteAnnouncement, setSiteAnnouncement] = useState<SiteAnnouncement>(() =>
+    loadLocalSiteAnnouncement()
+  );
 
   const handleSelectCountry = useCallback(
     (code: string) => {
@@ -212,6 +222,25 @@ export default function App() {
     return () => {
       active = false;
       unsubscribePacks();
+    };
+  }, []);
+
+  // Fetch & subscribe to storefront top announcement banner (Supabase + instant localStorage sync)
+  useEffect(() => {
+    let active = true;
+    void fetchSiteAnnouncementRemote().then((res) => {
+      if (active) {
+        setSiteAnnouncement(res.announcement);
+      }
+    });
+    const unsubscribeAnnouncement = subscribeSiteAnnouncementRealtime((updated) => {
+      if (active) {
+        setSiteAnnouncement(updated);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribeAnnouncement();
     };
   }, []);
 
@@ -748,10 +777,36 @@ export default function App() {
     (isAdminAuthenticated && isAdminFreeMode) || hasRemainingCredits || hasBonusCredits
   );
 
+  const hasActiveAnnouncement = Boolean(
+    siteAnnouncement.isActive && siteAnnouncement.message.trim().length > 0
+  );
+
   return (
     <div className="min-h-[100dvh] pb-[env(safe-area-inset-bottom)] bg-[#1C1F24] text-[#F3F4F6] flex flex-col">
+      {/* Sleek Dark-Green & Gold Top Storefront Announcement Bar */}
+      {hasActiveAnnouncement && (
+        <div
+          role="region"
+          aria-label="Anons Ofisyèl Sit la"
+          className="pt-[env(safe-area-inset-top)] border-b border-amber-400/50 bg-gradient-to-r from-[#052319] via-[#0B3B2B] to-[#052319] shadow-[0_4px_20px_rgba(16,185,129,0.12)]"
+        >
+          <div className="mx-auto flex max-w-6xl items-center justify-center gap-2.5 px-4 sm:px-6 py-2.5 text-center">
+            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-400/15 border border-amber-400/45 text-amber-300">
+              <Megaphone className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+            <p className="text-xs sm:text-sm font-bold tracking-wide text-amber-200 leading-snug">
+              {siteAnnouncement.message}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Top Bar Contract: 3 clean zones separated by gap-8 */}
-      <header className="sticky top-0 z-30 pt-[env(safe-area-inset-top)] border-b border-[#363B44] bg-[#262A30]/95 backdrop-blur-md">
+      <header
+        className={`sticky top-0 z-30 ${
+          hasActiveAnnouncement ? '' : 'pt-[env(safe-area-inset-top)]'
+        } border-b border-[#363B44] bg-[#262A30]/95 backdrop-blur-md`}
+      >
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 sm:gap-6 px-3 sm:px-6 h-16">
           {/* Zone 1: Brand wordmark */}
           <a

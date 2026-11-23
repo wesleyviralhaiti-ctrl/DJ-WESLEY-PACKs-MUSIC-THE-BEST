@@ -32,6 +32,7 @@ import {
   FileArchive,
   Zap,
   Music,
+  Megaphone,
 } from 'lucide-react';
 import {
   COMING_SOON_GENRE_PRESETS,
@@ -94,6 +95,15 @@ import {
   supabase,
 } from '../lib/supabase';
 import { getCountryByCode } from '../data/countries';
+import {
+  SITE_SETTINGS_SQL_SNIPPET,
+  SiteAnnouncement,
+  clearSiteAnnouncementRemote,
+  fetchSiteAnnouncementRemote,
+  loadLocalSiteAnnouncement,
+  publishSiteAnnouncementRemote,
+  subscribeSiteAnnouncementRealtime,
+} from '../data/siteAnnouncement';
 import {
   VisitorProfile,
   VISITORS_CACHE_STORAGE_KEY,
@@ -344,6 +354,22 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [requestSearch, setRequestSearch] = useState<string>('');
   const [copiedRequestId, setCopiedRequestId] = useState<string | null>(null);
 
+  // Storefront Top Announcement Banner ("📢 BANYÈ ANONS SOU SIT LA")
+  const [liveAnnouncement, setLiveAnnouncement] = useState<SiteAnnouncement>(() =>
+    loadLocalSiteAnnouncement()
+  );
+  const [announcementInput, setAnnouncementInput] = useState<string>(
+    () => loadLocalSiteAnnouncement().message
+  );
+  const [isSavingAnnouncement, setIsSavingAnnouncement] = useState<boolean>(false);
+  const [announcementFeedback, setAnnouncementFeedback] = useState<{
+    text: string;
+    variant: 'success' | 'info' | 'warning';
+  } | null>(null);
+  const [announcementMissingTable, setAnnouncementMissingTable] = useState<boolean>(false);
+  const [showSiteSettingsSql, setShowSiteSettingsSql] = useState<boolean>(false);
+  const [copiedSiteSettingsSql, setCopiedSiteSettingsSql] = useState<boolean>(false);
+
   const syncVisitorsFromSupabase = async () => {
     const res = await fetchVisitorsFromSupabaseDirect();
     setVisitors(res.visitors);
@@ -420,11 +446,23 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       void syncOrdersFromSupabase();
       void syncVisitorsFromSupabase();
       void fetchAllPackRequestsRemote().then((remoteReqs) => setPackRequests(remoteReqs));
+      void fetchSiteAnnouncementRemote().then((res) => {
+        setLiveAnnouncement(res.announcement);
+        setAnnouncementInput(res.announcement.message);
+        setAnnouncementMissingTable(res.missingTable);
+      });
     }
     if (!isOpen) {
       setIsDraggingFolder(false);
     }
   }, [isOpen, isAuthenticated, patternPrefix, selectedPackId]);
+
+  useEffect(() => {
+    if (!isOpen || !isAuthenticated) return;
+    return subscribeSiteAnnouncementRealtime((updated) => {
+      setLiveAnnouncement(updated);
+    });
+  }, [isOpen, isAuthenticated]);
 
   // Keep payment orders, VIP keys, live visitors & pack requests synced directly with Supabase every 5s
   useEffect(() => {
@@ -2141,7 +2179,181 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             </div>
 
             <div className="p-6 space-y-6 overflow-y-auto">
-              {/* TOP OF PACKS TAB: + Kreye Nouvo Folder (Upload Real Folder OR Coming Soon Placeholder) */}
+              {/* TOP OF PACKS TAB: 📢 BANYÈ ANONS SOU SIT LA + Kreye Nouvo Folder */}
+              {activeTab === 'packs' && (
+              <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-br from-[#0A2E21] via-[#1B2422] to-[#202429] p-5 sm:p-6 space-y-4 shadow-[0_8px_28px_rgba(16,185,129,0.08)]">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-amber-500/25 pb-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-400/15 border border-amber-400/40 text-amber-300">
+                      <Megaphone className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-base sm:text-lg font-bold text-amber-200">
+                        📢 BANYÈ ANONS SOU SIT LA
+                      </h3>
+                      <p className="text-xs text-[#D1D5DB]">
+                        Afiche yon mesaj anons anlè tout sit la imedyatman pou tout vizitè yo.
+                      </p>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`inline-flex items-center gap-1.5 self-start sm:self-center rounded-xl px-3 py-1.5 text-xs font-bold border ${
+                      liveAnnouncement.isActive && liveAnnouncement.message
+                        ? 'bg-[#10B981]/20 border-[#10B981]/45 text-emerald-300'
+                        : 'bg-[#1C1F24] border-[#363B44] text-[#9CA3AF]'
+                    }`}
+                  >
+                    {liveAnnouncement.isActive && liveAnnouncement.message
+                      ? '🟢 Anons Aktif Sou Sit la'
+                      : '⚪ Pa Gen Anons Aktif'}
+                  </span>
+                </div>
+
+                {liveAnnouncement.isActive && liveAnnouncement.message && (
+                  <div className="rounded-xl border border-amber-400/45 bg-[#06281D] px-4 py-2.5 text-xs sm:text-sm font-semibold text-amber-200 flex items-center gap-2">
+                    <span aria-hidden="true">📢</span>
+                    <span className="truncate">{liveAnnouncement.message}</span>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    value={announcementInput}
+                    onChange={(e) => {
+                      setAnnouncementInput(e.target.value);
+                      if (announcementFeedback) setAnnouncementFeedback(null);
+                    }}
+                    placeholder="🔥 Chak jou n ap lage 10 nouvo folder mizik VIP!"
+                    aria-label="Mesaj banyè anons sou sit la"
+                    className="w-full rounded-xl border border-[#363B44] bg-[#1C1F24] px-4 py-3 text-sm text-[#F3F4F6] placeholder-[#9CA3AF] focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-400/20"
+                  />
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      disabled={isSavingAnnouncement}
+                      onClick={async () => {
+                        const text = announcementInput.trim();
+                        if (!text) {
+                          setAnnouncementFeedback({
+                            text: '⚠️ Ekri yon mesaj anvan ou klike sou Pibliye.',
+                            variant: 'warning',
+                          });
+                          return;
+                        }
+                        setIsSavingAnnouncement(true);
+                        setAnnouncementFeedback(null);
+                        try {
+                          const res = await publishSiteAnnouncementRemote(text);
+                          setLiveAnnouncement(res.announcement);
+                          setAnnouncementMissingTable(res.missingTable);
+                          setAnnouncementFeedback({
+                            text: res.savedToSupabase
+                              ? '✅ Banyè anons la pibliye sou sit la epi sove nan Supabase!'
+                              : '✅ Banyè anons la pibliye imedyatman sou sit la (sovgad lokal aktif)!',
+                            variant: 'success',
+                          });
+                        } finally {
+                          setIsSavingAnnouncement(false);
+                        }
+                      }}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-60 text-[#0B1410] text-xs sm:text-sm font-extrabold transition-colors cursor-pointer"
+                    >
+                      <span>
+                        {isSavingAnnouncement
+                          ? 'Ap pibliye...'
+                          : '📢 Pibliye / Mete Ajou Mesaj la'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isSavingAnnouncement}
+                      onClick={async () => {
+                        setIsSavingAnnouncement(true);
+                        setAnnouncementFeedback(null);
+                        try {
+                          const res = await clearSiteAnnouncementRemote();
+                          setLiveAnnouncement(res.announcement);
+                          setAnnouncementInput('');
+                          setAnnouncementMissingTable(res.missingTable);
+                          setAnnouncementFeedback({
+                            text: '🗑️ Banyè anons la retire sou sit la imedyatman.',
+                            variant: 'info',
+                          });
+                        } finally {
+                          setIsSavingAnnouncement(false);
+                        }
+                      }}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 hover:bg-rose-500/25 disabled:opacity-60 text-rose-200 text-xs sm:text-sm font-bold transition-colors cursor-pointer"
+                    >
+                      <span>🗑️ Retire Mesaj la</span>
+                    </button>
+
+                    {announcementMissingTable && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSiteSettingsSql((v) => !v)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#1C1F24] border border-amber-500/35 text-amber-200 text-xs font-semibold hover:border-amber-400 transition-colors cursor-pointer"
+                      >
+                        <span>📋 SQL Supabase (`site_settings`)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {announcementFeedback && (
+                    <div
+                      className={`rounded-xl border px-3.5 py-2 text-xs sm:text-sm font-semibold ${
+                        announcementFeedback.variant === 'success'
+                          ? 'bg-[#10B981]/15 border-[#10B981]/40 text-emerald-200'
+                          : announcementFeedback.variant === 'warning'
+                            ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+                            : 'bg-[#1C1F24] border-[#363B44] text-[#D1D5DB]'
+                      }`}
+                    >
+                      {announcementFeedback.text}
+                    </div>
+                  )}
+
+                  {showSiteSettingsSql && announcementMissingTable && (
+                    <div className="rounded-xl border border-amber-500/30 bg-[#1C1F24] p-3.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-amber-200 font-semibold">
+                          Pou anons la sinkronize sou tout aparèy/telefon via Supabase, kouri SQL sa a nan Supabase SQL Editor:
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(SITE_SETTINGS_SQL_SNIPPET);
+                            setCopiedSiteSettingsSql(true);
+                            setTimeout(() => setCopiedSiteSettingsSql(false), 2500);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-400/20 text-amber-200 text-xs font-bold hover:bg-amber-400/30 cursor-pointer shrink-0"
+                        >
+                          {copiedSiteSettingsSql ? (
+                            <>
+                              <Check className="h-3.5 w-3.5" />
+                              <span>Kopye!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3.5 w-3.5" />
+                              <span>Kopye SQL</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <pre className="text-[11px] font-mono text-[#D1D5DB] overflow-x-auto whitespace-pre-wrap">
+                        {SITE_SETTINGS_SQL_SNIPPET}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+              )}
+
               {activeTab === 'packs' && (
               <div className="rounded-2xl border border-[#363B44] bg-[#202429] p-5 sm:p-6 space-y-5">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#363B44] pb-4">
