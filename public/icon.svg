@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="emeraldGlow" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.28" />
+      <stop offset="65%" stop-color="#10B981" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#090A0D" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="wGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399" />
+      <stop offset="55%" stop-color="#10B981" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+    <linearGradient id="frameGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.55" />
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0.15" />
+    </linearGradient>
+  </defs>
+
+  <!-- Full-bleed Obsidian Black background -->
+  <rect width="512" height="512" fill="#090A0D" />
+  <rect width="512" height="512" fill="url(#emeraldGlow)" />
+
+  <!-- Subtle DJ Vinyl Groove Rings -->
+  <circle cx="256" cy="248" r="186" fill="none" stroke="#10B981" stroke-opacity="0.12" stroke-width="2" />
+  <circle cx="256" cy="248" r="158" fill="none" stroke="#10B981" stroke-opacity="0.16" stroke-width="1.5" stroke-dasharray="10 8" />
+
+  <!-- Crisp Inner Framing Border -->
+  <rect x="44" y="44" width="424" height="424" rx="88" fill="none" stroke="url(#frameGrad)" stroke-width="4" />
+
+  <!-- Bold Geometric "W" DJ Monogram -->
+  <path
+    d="M110 156 L154 156 L194 300 L236 184 L276 184 L318 300 L358 156 L402 156 L342 356 L296 356 L256 244 L216 356 L170 356 Z"
+    fill="url(#wGrad)"
+  />
+
+  <!-- DJ Equalizer Bars Accent Under the "W" -->
+  <rect x="188" y="388" width="16" height="24" rx="5" fill="#10B981" fill-opacity="0.55" />
+  <rect x="218" y="378" width="16" height="34" rx="5" fill="#10B981" fill-opacity="0.85" />
+  <rect x="248" y="370" width="16" height="42" rx="5" fill="#34D399" />
+  <rect x="278" y="378" width="16" height="34" rx="5" fill="#10B981" fill-opacity="0.85" />
+  <rect x="308" y="388" width="16" height="24" rx="5" fill="#10B981" fill-opacity="0.55" />
+</svg>

@@ -1,0 +1,6 @@
+{
+  "name": "WESLEY MUSIC PACKS",
+  "description": "WESLEY MUSIC PACKS (by DJ Wesley) — Pake mizik VIP ak lis 100 mizik pou DJ ak fanatik mizik — Konpa, Rabòday, Afrobeats ak Hip-Hop.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
