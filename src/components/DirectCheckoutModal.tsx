@@ -44,6 +44,7 @@ import {
   subscribePaymentOrderByIdRealtime,
   USDT_TRC20_WALLET_ADDRESS,
 } from '../data/paymentOrders';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface DirectCheckoutModalProps {
   isOpen: boolean;
@@ -62,6 +63,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
   onClose,
   onUnlockWithKey,
 }) => {
+  const { t, getPlanText } = useLanguage();
   const [phoneInput, setPhoneInput] = useState('');
   const [natcashSmsInput, setNatcashSmsInput] = useState('');
   const [txIdInput, setTxIdInput] = useState('');
@@ -186,13 +188,10 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
   if (!isOpen || (!plan && !currentOrder)) return null;
 
   const activePlanId = currentOrder?.planId ?? plan!.id;
-  const activePlanTitle = currentOrder?.planTitle ?? plan!.shortLabel;
-  const activePlanBadge = plan?.badge;
-  const activePlanSubtitle =
-    plan?.subtitle ??
-    (currentOrder && currentOrder.folders >= 999
-      ? "♾️ Telechajman a L'Infini ak tout folder .ZIP yo"
-      : `${((currentOrder?.folders ?? 10) * 100).toLocaleString('en-US')} Mizik .ZIP an Lòd`);
+  const activePlanText = getPlanText(activePlanId);
+  const activePlanTitle = activePlanText.shortLabel || currentOrder?.planTitle || plan!.shortLabel;
+  const activePlanBadge = activePlanText.badge ?? plan?.badge;
+  const activePlanSubtitle = activePlanText.subtitle || plan?.subtitle || '';
 
   const haitiPriceLabel = getFormattedPlanPrice(activePlanId, 'HT');
   const displayPriceLabel = getFormattedPlanPrice(activePlanId, selectedCountryCode);
@@ -225,17 +224,13 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
       const text = await navigator.clipboard.readText();
       if (text && text.trim().length > 0) {
         setNatcashSmsInput(text.trim());
-        setPasteFeedback('✔ Mesaj la kole!');
+        setPasteFeedback(t.pastedFeedback);
         window.setTimeout(() => setPasteFeedback(null), 2200);
       } else {
-        setFormError(
-          'Pa gen okenn mesaj kopye nan prespapye w la — kopye SMS Natcash la anvan oswa peze lontan anndan bwat la pou w kole l.'
-        );
+        setFormError(t.pasteEmptyError);
       }
     } catch {
-      setFormError(
-        'Navigatè a pa bay aksè otomatik pou kole — peze lontan anndan bwat tèks la epi chwazi Paste / Kole.'
-      );
+      setFormError(t.pasteBlockedError);
     }
   };
 
@@ -302,10 +297,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
       setCurrentOrder(res.order);
     }
     if (res.status === 'pending' || res.status === 'error') {
-      setNatcashStatusNote(
-        res.message ??
-          'Resi SMS Natcash la poko valide — verifye kòd la oswa re-eseye nan kèk segonn.'
-      );
+      setNatcashStatusNote(res.message ?? t.recheckPendingFallback);
     }
   };
 
@@ -316,7 +308,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
     const validation = await validateVipKeyCodeRemote(currentOrder.issuedVipKey);
     setIsUnlockingKey(false);
     if (validation.status !== 'valid' || !validation.record) {
-      setUnlockError(validation.error ?? 'Kòd la pa valid oswa li deja itilize.');
+      setUnlockError(validation.error ?? t.invalidOrUsedKeyError);
       return;
     }
     saveActiveCheckoutOrderId(null);
@@ -332,160 +324,156 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
     setUnlockError(null);
   };
 
-  const renderApprovedKeyView = (order: PaymentOrder) => (
-    <div className="space-y-5 pt-2">
-      <div className="rounded-2xl border border-emerald-400/60 bg-gradient-to-b from-[#10B981]/20 to-[#1C1F24] p-5 text-center space-y-3 shadow-[0_0_32px_rgba(16,185,129,0.22)]">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#10B981] text-[#0B1410]">
-          <CheckCircle2 className="h-7 w-7" />
-        </div>
-        <div>
-          <p className="text-xs font-mono font-bold uppercase tracking-widest text-emerald-300">
-            {order.verifiedBy === 'trongrid'
-              ? '⚡ Konfime Otomatikman sou TRON (TRC20)'
-              : '✔ Valide pa Sistèm VIP Wesley Music'}
-          </p>
-          <h3 className="mt-1 font-display text-xl sm:text-2xl font-extrabold text-[#F3F4F6]">
-            🎉 MEN KLE VIP OU A!
-          </h3>
-          <p className="mt-1 text-xs text-[#D1D5DB]">
-            Plan: <strong className="text-[#F3F4F6]">{order.planTitle}</strong> ·{' '}
-            {order.folders >= 999
-              ? "♾️ Aksè Ilimite a L'Infini"
-              : `${order.folders} Folder .ZIP`}
-          </p>
-        </div>
-
-        <div className="rounded-xl bg-[#202429] border border-[#10B981]/50 p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="text-center sm:text-left">
-            <span className="block text-[10px] font-mono uppercase tracking-wider text-[#9CA3AF]">
-              Kòd Sekrè VIP Ou (Yon Sèl Fwa)
-            </span>
-            <span className="font-mono text-2xl sm:text-3xl font-black tracking-widest text-emerald-300 select-all">
-              {order.issuedVipKey}
-            </span>
+  const renderApprovedKeyView = (order: PaymentOrder) => {
+    const orderPlanText = getPlanText(order.planId);
+    return (
+      <div className="space-y-5 pt-2">
+        <div className="rounded-2xl border border-emerald-400/60 bg-gradient-to-b from-[#10B981]/20 to-[#1C1F24] p-5 text-center space-y-3 shadow-[0_0_32px_rgba(16,185,129,0.22)]">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#10B981] text-[#0B1410]">
+            <CheckCircle2 className="h-7 w-7" />
           </div>
-          <button
-            type="button"
-            onClick={() => void handleCopy(order.issuedVipKey || '', 'key')}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#262A30] hover:bg-[#363B44] border border-[#363B44] text-xs font-bold text-[#F3F4F6] cursor-pointer shrink-0"
-          >
-            {copiedField === 'key' ? (
-              <>
-                <Check className="h-3.5 w-3.5 text-[#10B981]" />
-                <span className="text-emerald-300">Kopye!</span>
-              </>
-            ) : (
-              <>
-                <Copy className="h-3.5 w-3.5 text-[#D1D5DB]" />
-                <span>📋 Kopye Kle a</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {unlockError && (
-          <p className="text-xs text-rose-300 bg-rose-500/15 border border-rose-500/40 rounded-lg px-3 py-2">
-            {unlockError}
-          </p>
-        )}
-
-        <button
-          type="button"
-          disabled={isUnlockingKey}
-          onClick={() => void handleUnlockScreenKey()}
-          className="w-full min-h-[52px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-65 text-[#0B1410] font-display font-extrabold text-sm sm:text-base px-5 py-3.5 shadow-[0_0_24px_rgba(16,185,129,0.35)] transition-colors cursor-pointer"
-        >
-          <KeyRound className="h-5 w-5 shrink-0" />
-          <span>
-            {isUnlockingKey
-              ? 'Ap debloke aksè VIP la...'
-              : '🔓 DEBLOKE TOUT FOLDER .ZIP YO KOUNYE A'}
-          </span>
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderPendingOrderView = (order: PaymentOrder) => (
-    <div className="space-y-4 pt-2">
-      <div className="rounded-2xl border border-amber-400/50 bg-gradient-to-b from-amber-500/10 to-[#1C1F24] p-5 text-center space-y-3">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-400/15 border border-amber-400/50 text-amber-300">
-          <Clock className="h-6 w-6 animate-pulse" />
-        </div>
-        <div>
-          <p className="text-[11px] font-mono uppercase tracking-widest text-amber-300 font-bold">
-            ⏳ KÒMAND #{order.id} ANREJISTRE
-          </p>
-          <h3 className="mt-1.5 font-display text-base sm:text-lg font-bold text-[#F3F4F6] leading-snug">
-            ⏳ N ap verifye peman ou a... Kle VIP ou ap parèt isit la otomatikman!
-          </h3>
-          <p className="mt-1.5 text-xs text-[#D1D5DB] leading-relaxed">
-            Kite fenèt sa a ouvè sou telefòn ou — kou Admin VIP la valide peman an,{' '}
-            <strong className="text-emerald-300">Kle VIP ou a ap parèt touswit an tan reyèl!</strong>
-          </p>
-        </div>
-
-        <div className="rounded-xl bg-[#202429] border border-[#363B44] p-3.5 text-left text-xs space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[#9CA3AF]">Plan:</span>
-            <span className="font-bold text-[#F3F4F6]">{order.planTitle}</span>
+          <div>
+            <p className="text-xs font-mono font-bold uppercase tracking-widest text-emerald-300">
+              {order.verifiedBy === 'trongrid' ? t.verifiedTronTag : t.verifiedVipTag}
+            </p>
+            <h3 className="mt-1 font-display text-xl sm:text-2xl font-extrabold text-[#F3F4F6]">
+              {t.hereIsYourVipKeyHeading}
+            </h3>
+            <p className="mt-1 text-xs text-[#D1D5DB]">
+              {t.planLabel}{' '}
+              <strong className="text-[#F3F4F6]">{orderPlanText.shortLabel || order.planTitle}</strong> ·{' '}
+              {order.folders >= 999
+                ? t.unlimitedInfinityLabel
+                : t.foldersZipCountLabel(order.folders)}
+            </p>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[#9CA3AF]">Montan:</span>
-            <span className="font-mono font-bold text-emerald-300">{order.amountLabel}</span>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[#9CA3AF]">Metòd:</span>
-            <span className="font-semibold text-[#D1D5DB]">
-              {order.method === 'natcash' ? '🇭🇹 Natcash (+509 56568810)' : '🌐 USDT (TRC20)'}
-            </span>
-          </div>
-          {order.buyerPhone && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[#9CA3AF]">Telefòn:</span>
-              <span className="font-mono text-[#D1D5DB]">{order.buyerPhone}</span>
+
+          <div className="rounded-xl bg-[#202429] border border-[#10B981]/50 p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="text-center sm:text-left">
+              <span className="block text-[10px] font-mono uppercase tracking-wider text-[#9CA3AF]">
+                {t.oneTimeSecretKeyLabel}
+              </span>
+              <span className="font-mono text-2xl sm:text-3xl font-black tracking-widest text-emerald-300 select-all">
+                {order.issuedVipKey}
+              </span>
             </div>
-          )}
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[#9CA3AF]">TxID:</span>
-            <span className="font-mono text-amber-200 truncate max-w-[210px]">
-              {order.transactionId}
-            </span>
+            <button
+              type="button"
+              onClick={() => void handleCopy(order.issuedVipKey || '', 'key')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#262A30] hover:bg-[#363B44] border border-[#363B44] text-xs font-bold text-[#F3F4F6] cursor-pointer shrink-0"
+            >
+              {copiedField === 'key' ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-[#10B981]" />
+                  <span className="text-emerald-300">{t.copiedShortBtn}</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3.5 w-3.5 text-[#D1D5DB]" />
+                  <span>{t.copyKeyBtn}</span>
+                </>
+              )}
+            </button>
           </div>
-        </div>
 
-        {natcashStatusNote && (
-          <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-            {natcashStatusNote}
-          </p>
-        )}
+          {unlockError && (
+            <p className="text-xs text-rose-300 bg-rose-500/15 border border-rose-500/40 rounded-lg px-3 py-2">
+              {unlockError}
+            </p>
+          )}
 
-        {order.method === 'natcash' && (
           <button
             type="button"
-            disabled={isRecheckingNatcash}
-            onClick={() => void handleRecheckNatcash()}
-            className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#10B981]/15 border border-[#10B981]/45 hover:bg-[#10B981]/25 px-4 py-2.5 text-xs font-bold text-emerald-300 cursor-pointer disabled:opacity-60"
+            disabled={isUnlockingKey}
+            onClick={() => void handleUnlockScreenKey()}
+            className="w-full min-h-[52px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-65 text-[#0B1410] font-display font-extrabold text-sm sm:text-base px-5 py-3.5 shadow-[0_0_24px_rgba(16,185,129,0.35)] transition-colors cursor-pointer"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRecheckingNatcash ? 'animate-spin' : ''}`} />
-            <span>
-              {isRecheckingNatcash
-                ? 'Ap re-verifye tranzaksyon an...'
-                : '🔄 Re-verifye Tranzaksyon Mwen'}
-            </span>
+            <KeyRound className="h-5 w-5 shrink-0" />
+            <span>{isUnlockingKey ? t.unlockingBtn : t.unlockAllFoldersNowBtn}</span>
           </button>
-        )}
-
-        <button
-          type="button"
-          onClick={handleStartOver}
-          className="text-xs text-[#9CA3AF] hover:text-[#F3F4F6] underline underline-offset-4 cursor-pointer"
-        >
-          Modifye Kòd Tranzaksyon oswa Voye yon Lòt Peman
-        </button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
+
+  const renderPendingOrderView = (order: PaymentOrder) => {
+    const orderPlanText = getPlanText(order.planId);
+    return (
+      <div className="space-y-4 pt-2">
+        <div className="rounded-2xl border border-amber-400/50 bg-gradient-to-b from-amber-500/10 to-[#1C1F24] p-5 text-center space-y-3">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-400/15 border border-amber-400/50 text-amber-300">
+            <Clock className="h-6 w-6 animate-pulse" />
+          </div>
+          <div>
+            <p className="text-[11px] font-mono uppercase tracking-widest text-amber-300 font-bold">
+              {t.orderRegisteredTag(order.id)}
+            </p>
+            <h3 className="mt-1.5 font-display text-base sm:text-lg font-bold text-[#F3F4F6] leading-snug">
+              {t.verifyingWaitHeading}
+            </h3>
+            <p className="mt-1.5 text-xs text-[#D1D5DB] leading-relaxed">
+              {t.verifyingWaitDesc}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-[#202429] border border-[#363B44] p-3.5 text-left text-xs space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[#9CA3AF]">{t.planLabel}</span>
+              <span className="font-bold text-[#F3F4F6]">{orderPlanText.shortLabel || order.planTitle}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[#9CA3AF]">{t.amountLabel}</span>
+              <span className="font-mono font-bold text-emerald-300">{order.amountLabel}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[#9CA3AF]">{t.methodLabel}</span>
+              <span className="font-semibold text-[#D1D5DB]">
+                {order.method === 'natcash' ? '🇭🇹 Natcash (+509 56568810)' : '🌐 USDT (TRC20)'}
+              </span>
+            </div>
+            {order.buyerPhone && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[#9CA3AF]">{t.phoneLabel}</span>
+                <span className="font-mono text-[#D1D5DB]">{order.buyerPhone}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[#9CA3AF]">TxID:</span>
+              <span className="font-mono text-amber-200 truncate max-w-[210px]">
+                {order.transactionId}
+              </span>
+            </div>
+          </div>
+
+          {natcashStatusNote && (
+            <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+              {natcashStatusNote}
+            </p>
+          )}
+
+          {order.method === 'natcash' && (
+            <button
+              type="button"
+              disabled={isRecheckingNatcash}
+              onClick={() => void handleRecheckNatcash()}
+              className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#10B981]/15 border border-[#10B981]/45 hover:bg-[#10B981]/25 px-4 py-2.5 text-xs font-bold text-emerald-300 cursor-pointer disabled:opacity-60"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isRecheckingNatcash ? 'animate-spin' : ''}`} />
+              <span>{isRecheckingNatcash ? t.recheckingNatcashBtn : t.recheckNatcashBtn}</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleStartOver}
+            className="text-xs text-[#9CA3AF] hover:text-[#F3F4F6] underline underline-offset-4 cursor-pointer"
+          >
+            {t.modifyOrRetryPaymentLink}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -498,7 +486,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Fèmen fenèt peman an"
+          aria-label={t.modalCloseAria}
           className="absolute top-4 right-4 flex h-9 w-9 items-center justify-center rounded-lg text-[#9CA3AF] hover:bg-[#363B44] hover:text-[#F3F4F6] transition-colors cursor-pointer"
         >
           <X className="h-5 w-5" />
@@ -512,10 +500,10 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
             <span>·</span>
             <span>
               {isHaiti
-                ? 'NATCASH DIRÈK'
+                ? t.natcashDirectTag
                 : intlMethodTab === 'card'
-                  ? 'KAT VISA / APPLE PAY / USDT'
-                  : 'USDT (TRC20) INSTANT'}
+                  ? t.cardIntlTag
+                  : t.usdtDirectTag}
             </span>
           </div>
           <h2
@@ -541,16 +529,16 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
             <div className="rounded-xl bg-rose-500/15 border border-rose-500/40 p-4 text-xs text-rose-200 space-y-2">
               <AlertCircle className="h-6 w-6 text-rose-400 mx-auto" />
               <p className="font-bold text-sm text-rose-200">
-                Peman #{currentOrder.transactionId} sa a pa t ka valide.
+                {t.paymentRejectedHeading(currentOrder.transactionId)}
               </p>
-              <p>Verifye kòd tranzaksyon an oswa montan an epi eseye soumèt ankò.</p>
+              <p>{t.paymentRejectedDesc}</p>
             </div>
             <button
               type="button"
               onClick={handleStartOver}
               className="w-full min-h-[46px] rounded-xl bg-[#10B981] hover:bg-[#059669] text-[#0B1410] font-display font-bold text-sm cursor-pointer"
             >
-              Eseye Ankò
+              {t.tryAgainBtn}
             </button>
           </div>
         ) : isHaiti ? (
@@ -558,7 +546,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
           <form onSubmit={(e) => void handleNatcashSubmit(e)} className="pt-4 space-y-4">
             <div className="rounded-xl bg-[#1C1F24] border border-[#10B981]/35 p-4 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-[#9CA3AF]">Montan pou Peye:</span>
+                <span className="text-xs font-semibold text-[#9CA3AF]">{t.amountToPayLabel}</span>
                 <span className="font-mono text-base sm:text-lg font-extrabold text-emerald-300">
                   {haitiPriceLabel}
                 </span>
@@ -567,7 +555,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
               <div className="pt-2 border-t border-[#363B44] space-y-2">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-[#D1D5DB]">
                   <Smartphone className="h-3.5 w-3.5 text-[#10B981]" />
-                  <span>Voye peman Natcash la sou nimewo sa a:</span>
+                  <span>{t.sendNatcashInstruction}</span>
                 </div>
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl bg-[#262A30] border border-[#363B44] p-3">
                   <span className="font-mono text-lg sm:text-xl font-black tracking-wide text-[#F3F4F6] select-all">
@@ -581,12 +569,12 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                     {copiedField === 'natcash' ? (
                       <>
                         <Check className="h-3.5 w-3.5" />
-                        <span>✔ Nimewo Kopye!</span>
+                        <span>{t.numberCopiedBtn}</span>
                       </>
                     ) : (
                       <>
                         <Copy className="h-3.5 w-3.5" />
-                        <span>📋 Kopye Nimewo Natcash</span>
+                        <span>{t.copyNatcashBtn}</span>
                       </>
                     )}
                   </button>
@@ -601,7 +589,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                     htmlFor="natcash-sms-textarea"
                     className="block text-xs font-bold text-[#F3F4F6] leading-snug"
                   >
-                    📋 Kole Tout Mesaj Konfimasyon Natcash Ou Resevwa a Isit La Nèt
+                    {t.pasteNatcashSmsLabel}
                   </label>
                   <button
                     type="button"
@@ -616,7 +604,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                     ) : (
                       <>
                         <ClipboardPaste className="h-3.5 w-3.5" />
-                        <span>📋 Kole Mesaj la (Paste)</span>
+                        <span>{t.pasteBtn}</span>
                       </>
                     )}
                   </button>
@@ -630,7 +618,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                     setNatcashSmsInput(e.target.value);
                     if (formError) setFormError(null);
                   }}
-                  placeholder="Kole tout mesaj konfimasyon Natcash ou resevwa a isit la (ki gen montan HTG, +509 56568810, ak Transcode la)..."
+                  placeholder={t.natcashSmsPlaceholder}
                   className="w-full rounded-xl bg-[#1C1F24] border border-[#363B44] px-3.5 py-2.5 text-xs sm:text-sm font-mono text-[#F3F4F6] placeholder:font-sans placeholder:text-[#9CA3AF] focus:border-[#10B981] focus:outline-none leading-relaxed resize-y min-h-[104px]"
                 />
               </div>
@@ -640,7 +628,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                   htmlFor="natcash-buyer-phone"
                   className="block text-xs font-medium text-[#9CA3AF] mb-1"
                 >
-                  Nimewo Telefòn Ou (Opsyonèl)
+                  {t.optionalPhoneLabel}
                 </label>
                 <input
                   id="natcash-buyer-phone"
@@ -674,12 +662,12 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
               {isSubmitting ? (
                 <>
                   <RefreshCw className="h-4 w-4 animate-spin shrink-0" />
-                  <span>Ap verifye mesaj Natcash la...</span>
+                  <span>{t.verifyingNatcashBtn}</span>
                 </>
               ) : (
                 <>
                   <Zap className="h-4 w-4 shrink-0" />
-                  <span>⚡ VERIFYE MESAJ NATCASH &amp; RESEVWA KLE VIP</span>
+                  <span>{t.verifyNatcashBtn}</span>
                 </>
               )}
             </button>
@@ -691,11 +679,11 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                 className="inline-flex items-center gap-1 hover:text-[#F3F4F6] cursor-pointer"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
-                <span>Chwazi yon lòt plan</span>
+                <span>{t.chooseAnotherPlanLink}</span>
               </button>
               <span className="inline-flex items-center gap-1 text-[#10B981]">
                 <ShieldCheck className="h-3.5 w-3.5" />
-                <span>Kle VIP parèt sou ekran an</span>
+                <span>{t.vipAppearsOnScreenNote}</span>
               </span>
             </div>
           </form>
@@ -717,7 +705,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                 }`}
               >
                 <CreditCard className="h-3.5 w-3.5 shrink-0" />
-                <span>💳 KAT VISA / MASTERCARD / APPLE PAY</span>
+                <span>{t.cardTabBtn}</span>
               </button>
 
               <button
@@ -733,7 +721,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                 }`}
               >
                 <QrCode className="h-3.5 w-3.5 shrink-0" />
-                <span>⚡ VOYE USDT DIRÈK (TRC20)</span>
+                <span>{t.usdtTabBtn}</span>
               </button>
             </div>
 
@@ -744,7 +732,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <span className="block text-[11px] font-semibold text-[#9CA3AF]">
-                        Montan pou Peye ak Kat ({displayPriceLabel}):
+                        {t.cardAmountLabel} ({displayPriceLabel}):
                       </span>
                       <span className="font-mono text-xl font-black text-emerald-300">
                         {usdtAmount} {fiatCurrency}{' '}
@@ -766,7 +754,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                       className="w-full min-h-[50px] inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#059669] via-[#10B981] to-[#059669] hover:brightness-110 text-[#0B1410] font-display font-extrabold text-xs sm:text-sm px-4 py-3 shadow-[0_0_24px_rgba(16,185,129,0.35)] transition-all text-center"
                     >
                       <CreditCard className="h-4 w-4 shrink-0" />
-                      <span>💳 PEYE AK KAT VISA / APPLE PAY KOUNYE A</span>
+                      <span>{t.payWithCardNowBtn}</span>
                       <ExternalLink className="h-3.5 w-3.5 shrink-0" />
                     </a>
 
@@ -776,7 +764,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                       rel="noopener noreferrer"
                       className="w-full min-h-[42px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#262A30] hover:bg-[#2E333B] border border-[#363B44] hover:border-[#10B981]/50 text-[#F3F4F6] font-display font-bold text-xs px-4 py-2.5 transition-colors text-center"
                     >
-                      <span>🌐 Lòt Pòtay Kat Visa / Mastercard (Paybis)</span>
+                      <span>{t.otherCardGatewayBtn}</span>
                       <ExternalLink className="h-3.5 w-3.5 shrink-0 text-[#10B981]" />
                     </a>
                   </div>
@@ -784,12 +772,10 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                   {/* Clear 2-Step Completion Box */}
                   <div className="rounded-lg bg-[#262A30] border border-[#10B981]/25 p-3 space-y-1.5 text-xs text-[#D1D5DB] leading-relaxed">
                     <p>
-                      <strong className="text-emerald-300">1.</strong> Peye montan an ak Kat
-                      Visa/Mastercard ou oswa Apple Pay nan fenèt ki ouvri a.
+                      <strong className="text-emerald-300">1.</strong> {t.cardStep1}
                     </p>
                     <p>
-                      <strong className="text-emerald-300">2.</strong> Kole kòd konfimasyon / TxID
-                      tranzaksyon an anba a pou w debloke Kle VIP ou touswit!
+                      <strong className="text-emerald-300">2.</strong> {t.cardStep2}
                     </p>
                   </div>
                 </div>
@@ -800,7 +786,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <span className="block text-[11px] font-semibold text-[#9CA3AF]">
-                      Montan Egzak pou Voye ({displayPriceLabel}):
+                      {t.exactAmountUsdtLabel} ({displayPriceLabel}):
                     </span>
                     <span className="font-mono text-xl font-black text-emerald-300">
                       {usdtAmount} USDT
@@ -829,7 +815,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
 
                   <div className="flex-1 min-w-0 w-full space-y-2 text-center sm:text-left">
                     <p className="text-[11px] font-semibold text-[#D1D5DB]">
-                      Adrès USDT (TRC20) Trust Wallet:
+                      {t.usdtAddressLabel}
                     </p>
                     <div className="rounded-lg bg-[#262A30] border border-[#363B44] px-3 py-2 font-mono text-xs text-emerald-300 break-all select-all">
                       {USDT_TRC20_WALLET_ADDRESS}
@@ -842,12 +828,12 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                       {copiedField === 'usdt' ? (
                         <>
                           <Check className="h-3.5 w-3.5" />
-                          <span>✔ Adrès USDT Kopye!</span>
+                          <span>{t.usdtAddressCopiedBtn}</span>
                         </>
                       ) : (
                         <>
                           <Copy className="h-3.5 w-3.5" />
-                          <span>📋 Kopye Adrès USDT (TRC20)</span>
+                          <span>{t.copyUsdtAddressBtn}</span>
                         </>
                       )}
                     </button>
@@ -872,7 +858,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                   setTxIdInput(e.target.value.trim());
                   if (formError) setFormError(null);
                 }}
-                placeholder="Kole 64-karaktè TxID / Hash TRON lan isit la..."
+                placeholder={t.txIdPlaceholder}
                 spellCheck={false}
                 className="w-full rounded-xl bg-[#1C1F24] border border-[#363B44] px-3.5 py-2.5 text-xs sm:text-sm font-mono text-[#F3F4F6] placeholder:font-sans placeholder:text-[#9CA3AF] focus:border-[#10B981] focus:outline-none"
               />
@@ -896,16 +882,12 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
               {isSubmitting || isVerifyingTron ? (
                 <>
                   <RefreshCw className="h-4 w-4 animate-spin shrink-0" />
-                  <span>
-                    {isVerifyingTron
-                      ? 'Ap verifye sou TRON (TRC20)...'
-                      : 'Ap anrejistre TxID la...'}
-                  </span>
+                  <span>{isVerifyingTron ? t.verifyingTronBtn : t.savingTxBtn}</span>
                 </>
               ) : (
                 <>
                   <Zap className="h-4 w-4 shrink-0" />
-                  <span>⚡ VERIFYE PEMAN &amp; DEBLOKE KLE VIP</span>
+                  <span>{t.verifyPayUnlockBtn}</span>
                 </>
               )}
             </button>
@@ -917,11 +899,11 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                 className="inline-flex items-center gap-1 hover:text-[#F3F4F6] cursor-pointer"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
-                <span>Chwazi yon lòt plan</span>
+                <span>{t.chooseAnotherPlanLink}</span>
               </button>
               <span className="inline-flex items-center gap-1 text-[#10B981]">
                 <ShieldCheck className="h-3.5 w-3.5" />
-                <span>Verifikasyon TronGrid + VIP</span>
+                <span>{t.tronVerificationNote}</span>
               </span>
             </div>
           </form>

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Search, X } from 'lucide-react';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface SpeechRecognitionAlternativeLike {
   transcript: string;
@@ -50,15 +51,6 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
-function getPreferredSpeechLang(): string {
-  if (typeof navigator === 'undefined') return 'fr-FR';
-  const navLang = (navigator.language || '').trim();
-  if (/^(en|fr|es|pt)/i.test(navLang)) {
-    return navLang;
-  }
-  return 'fr-FR';
-}
-
 interface CatalogSearchBarProps {
   value: string;
   onChange: (nextValue: string) => void;
@@ -72,6 +64,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
   totalMatchingFolders,
   totalMatchingTracks,
 }) => {
+  const { t, languageOption } = useLanguage();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
@@ -110,7 +103,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
     const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
     if (!SpeechRecognitionCtor) {
       setVoiceMessage({
-        text: 'Mikwo pa sipòte sou navigatè sa a — tape rechèch ou a',
+        text: t.micUnsupportedText,
         tone: 'warning',
       });
       inputRef.current?.focus();
@@ -124,7 +117,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
       recognition.continuous = false;
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
-      recognition.lang = getPreferredSpeechLang();
+      recognition.lang = languageOption.speechLang || 'fr-FR';
 
       recognition.onstart = () => {
         setIsListening(true);
@@ -153,22 +146,22 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
         }
         if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
           setVoiceMessage({
-            text: 'Otorizasyon mikwo refize — aktive mikwo nan navigatè w oswa tape rechèch ou a',
+            text: t.micPermissionDeniedText,
             tone: 'warning',
           });
         } else if (errCode === 'no-speech') {
           setVoiceMessage({
-            text: 'Nou pa tande anyen — klike sou 🎙️ ankò oswa tape rechèch ou a',
+            text: t.micNoSpeechText,
             tone: 'info',
           });
         } else if (errCode === 'language-not-supported' || errCode === 'audio-capture') {
           setVoiceMessage({
-            text: 'Mikwo pa sipòte sou navigatè sa a — tape rechèch ou a',
+            text: t.micUnsupportedText,
             tone: 'warning',
           });
         } else {
           setVoiceMessage({
-            text: 'Mikwo pa disponib kounye a — tape rechèch ou a',
+            text: t.micUnavailableText,
             tone: 'warning',
           });
         }
@@ -185,7 +178,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
     } catch {
       setIsListening(false);
       setVoiceMessage({
-        text: 'Mikwo pa sipòte sou navigatè sa a — tape rechèch ou a',
+        text: t.micUnsupportedText,
         tone: 'warning',
       });
       inputRef.current?.focus();
@@ -216,8 +209,8 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
             if (voiceMessage) setVoiceMessage(null);
             onChange(e.target.value);
           }}
-          placeholder="Chèche folder, atis, oswa tit mizik (egzanp: Rabòday, Drill, Klass)..."
-          aria-label="Chèche folder oswa mizik"
+          placeholder={t.searchPlaceholder}
+          aria-label={t.searchAriaLabel}
           className="w-full bg-transparent px-3 py-3 sm:py-3.5 text-sm sm:text-base text-[#F3F4F6] placeholder-[#9CA3AF] focus:outline-none [&::-webkit-search-cancel-button]:hidden"
         />
 
@@ -230,8 +223,8 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
                 setVoiceMessage(null);
                 inputRef.current?.focus();
               }}
-              aria-label="Efase rechèch la"
-              title="Efase rechèch la"
+              aria-label={t.clearSearchAria}
+              title={t.clearSearchAria}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#9CA3AF] hover:bg-[#363B44]/70 hover:text-[#F3F4F6] transition-colors cursor-pointer"
             >
               <X className="h-4 w-4" />
@@ -241,9 +234,9 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
           <button
             type="button"
             onClick={handleMicClick}
-            aria-label={isListening ? 'Kanpe mikwo' : 'Chèche ak vwa (🎙️)'}
+            aria-label={isListening ? t.micStopAria : t.micStartAria}
             aria-pressed={isListening}
-            title={isListening ? 'Kanpe mikwo' : 'Rechèch ak vwa (🎙️)'}
+            title={isListening ? t.micStopAria : t.micStartAria}
             className={`relative inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
               isListening
                 ? 'bg-[#10B981] border-[#10B981] text-[#0B1410] shadow-[0_0_16px_rgba(16,185,129,0.5)]'
@@ -257,7 +250,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#0B1410]" />
                 </span>
                 <MicOff className="h-4 w-4 shrink-0" />
-                <span className="hidden sm:inline">Kanpe</span>
+                <span className="hidden sm:inline">{t.micStopLabel}</span>
               </>
             ) : (
               <>
@@ -265,7 +258,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
                   🎙️
                 </span>
                 <Mic className="h-3.5 w-3.5 shrink-0 hidden sm:inline" />
-                <span className="hidden sm:inline">Vwa</span>
+                <span className="hidden sm:inline">{t.micVoiceLabel}</span>
               </>
             )}
           </button>
@@ -283,7 +276,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-80" />
             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#10B981]" />
           </span>
-          <span>🎙️ Pale kounye a...</span>
+          <span>{t.micListeningText}</span>
         </div>
       )}
 
@@ -302,7 +295,7 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
           <button
             type="button"
             onClick={() => setVoiceMessage(null)}
-            aria-label="Fèmen mesaj la"
+            aria-label={t.modalCloseAria}
             className="text-current opacity-70 hover:opacity-100 cursor-pointer"
           >
             <X className="h-3.5 w-3.5" />
@@ -313,14 +306,17 @@ export const CatalogSearchBar: React.FC<CatalogSearchBarProps> = ({
       {/* Live Filter Match Summary */}
       {hasQuery && !isListening && (
         <p className="text-xs text-[#9CA3AF] tabular-nums">
-          Rezilta pou <span className="font-semibold text-[#F3F4F6]">« {value.trim()} »</span>:{' '}
-          <span className="text-emerald-300 font-semibold">{totalMatchingFolders} folder</span>
+          {t.searchResultsPrefix}{' '}
+          <span className="font-semibold text-[#F3F4F6]">« {value.trim()} »</span>:{' '}
+          <span className="text-emerald-300 font-semibold">
+            {totalMatchingFolders} {t.foldersFoundWord}
+          </span>
           {totalMatchingTracks > 0 && (
             <>
               {' '}
-              ak{' '}
+              {t.andWord}{' '}
               <span className="text-emerald-300 font-semibold">
-                {totalMatchingTracks} mizik koresponn
+                {totalMatchingTracks} {t.tracksMatchWord}
               </span>
             </>
           )}

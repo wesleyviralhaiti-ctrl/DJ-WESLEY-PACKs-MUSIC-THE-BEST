@@ -41,6 +41,8 @@ import { ZipFilenameText } from './components/ZipFilenameText';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { CountrySelector } from './components/CountrySelector';
 import { CatalogSearchBar } from './components/CatalogSearchBar';
+import { LanguageSelector } from './components/LanguageSelector';
+import { useLanguage } from './contexts/LanguageContext';
 import {
   getCountryByCode,
   loadSelectedCountryCode,
@@ -105,6 +107,7 @@ function loadAdminAuthenticatedFlag(): boolean {
 }
 
 export default function App() {
+  const { t, autoSuggestLangForCountry } = useLanguage();
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() =>
     loadAdminAuthenticatedFlag()
   );
@@ -144,12 +147,13 @@ export default function App() {
     (code: string) => {
       const saved = saveSelectedCountryCode(code);
       setSelectedCountryCode(saved);
+      autoSuggestLangForCountry(saved, false);
       if (visitorProfile) {
         void sendVisitorHeartbeatRemote(visitorProfile, saved);
         setVisitorProfile((prev) => (prev ? { ...prev, countryCode: saved } : prev));
       }
     },
-    [visitorProfile]
+    [visitorProfile, autoSuggestLangForCountry]
   );
 
   // Capture ?ref=CODE referral parameter from URL immediately on arrival
@@ -364,9 +368,9 @@ export default function App() {
       });
       setRequestingZip(null);
       setRequestedZips((prev) => (prev.includes(zipFilename) ? prev : [...prev, zipFilename]));
-      showToast('✅ Demann ou an voye bay DJ Wesley! N ap lage pake sa a byento.');
+      showToast(t.requestSentToast);
     },
-    [selectedCountryCode, showToast]
+    [selectedCountryCode, showToast, t]
   );
 
   const syncActiveKeyFromStore = useCallback(() => {
@@ -491,11 +495,11 @@ export default function App() {
       });
       showToast(
         record.isUnlimited || record.totalFolders >= 999
-          ? '👑 Aksè VIP Ilimite debloke pou tout katalòg la!'
-          : `Aksè VIP debloke! Kredi Folder: ${record.remainingFolders} / ${record.totalFolders} Folder`
+          ? t.vipUnlockedUnlimitedToast
+          : t.vipUnlockedCreditsToast(record.remainingFolders, record.totalFolders)
       );
     },
-    [showToast]
+    [showToast, t]
   );
 
   const handleExhaustedAttempt = useCallback((code: string) => {
@@ -545,10 +549,10 @@ export default function App() {
       a.click();
       document.body.removeChild(a);
 
-      showToast('✅ Telechajman Lanse! Gade nan dosye Downloads ou.', 'success');
+      showToast(t.downloadLaunchedToast, 'success');
       return downloadUrl;
     },
-    [showToast]
+    [showToast, t]
   );
 
   const forceBrowserZipSave = useCallback(
@@ -561,7 +565,7 @@ export default function App() {
       link.download = cleanZipFilename;
       document.body.appendChild(link);
       link.click();
-      showToast('✅ Telechajman Lanse! Gade nan dosye Downloads ou.', 'success');
+      showToast(t.downloadLaunchedToast, 'success');
       window.setTimeout(() => {
         if (link.parentNode) {
           document.body.removeChild(link);
@@ -569,7 +573,7 @@ export default function App() {
         window.URL.revokeObjectURL(blobUrl);
       }, 5000);
     },
-    [showToast]
+    [showToast, t]
   );
 
   const triggerZipDownload = useCallback(
@@ -825,25 +829,27 @@ export default function App() {
               href="#pake-mizik"
               className="hover:text-[#F3F4F6] transition-colors whitespace-nowrap shrink-0"
             >
-              Folder .ZIP yo
+              {t.navFolders}
             </a>
             <a
               href="#koman-sa-mache"
               className="hover:text-[#F3F4F6] transition-colors whitespace-nowrap shrink-0"
             >
-              Kòman sa Mache
+              {t.navHowItWorks}
             </a>
             <button
               type="button"
               onClick={() => setIsAdminOpen(true)}
               className="hover:text-[#F3F4F6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              Admin VIP
+              {t.navAdmin}
             </button>
           </nav>
 
-          {/* Zone 3: Worldwide Country & Currency Selector + Primary Action / Quota Badge */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Zone 3: Language Pill + Country & Currency Selector + Primary Action / Quota Badge */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <LanguageSelector variant="pill" align="right" />
+
             <CountrySelector
               selectedCountryCode={selectedCountryCode}
               onSelectCountry={handleSelectCountry}
@@ -869,13 +875,13 @@ export default function App() {
               >
                 <span>
                   {activeKey.isUnlimited || activeKey.totalFolders >= 999 ? (
-                    '👑 VIP Ilimite'
+                    t.vipUnlimitedShort
                   ) : (
                     <>
-                      <span className="hidden sm:inline">📁 Kredi Folder ki rete: </span>
+                      <span className="hidden sm:inline">{t.folderCreditsRemainingLabel} </span>
                       <span className="sm:hidden">📁 </span>
                       {activeKey.remainingFolders} / {activeKey.totalFolders}
-                      <span className="hidden sm:inline"> Folder</span>
+                      <span className="hidden sm:inline"> {t.folderWord}</span>
                     </>
                   )}
                 </span>
@@ -890,8 +896,8 @@ export default function App() {
                 className="inline-flex items-center gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg bg-[#10B981] hover:bg-[#059669] text-[#0B1410] text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer"
               >
                 <KeyRound className="h-3.5 w-3.5 shrink-0" />
-                <span className="hidden sm:inline">Antre Kle VIP</span>
-                <span className="sm:hidden">Kle VIP</span>
+                <span className="hidden sm:inline">{t.enterVipKeyBtn}</span>
+                <span className="sm:hidden">{t.vipKeyShortBtn}</span>
               </button>
             )}
           </div>
@@ -918,9 +924,7 @@ export default function App() {
               }`}
             >
               <span>
-                {isAdminFreeMode
-                  ? '👑 MÒD ADMIN AKTIF (TELECHAJMAN GRATIS ILIMITE)'
-                  : '🔒 WÈ SIT LA TANKOU VIZITÈ (Klike pou Aktive Mòd Admin Gratis)'}
+                {isAdminFreeMode ? t.adminModeActive : t.adminVisitorPreview}
               </span>
             </button>
 
@@ -930,14 +934,14 @@ export default function App() {
                 onClick={() => setIsAdminOpen(true)}
                 className="font-semibold text-emerald-300 hover:text-[#F3F4F6] underline underline-offset-4 cursor-pointer"
               >
-                Ouvri Admin Panel
+                {t.openAdminPanel}
               </button>
               <button
                 type="button"
                 onClick={handleAdminLogout}
                 className="font-medium text-[#D1D5DB] hover:text-rose-300 cursor-pointer"
               >
-                Dekonekte
+                {t.logoutAdmin}
               </button>
             </div>
           </div>
@@ -961,13 +965,13 @@ export default function App() {
             >
               <span className="font-semibold">
                 {activeKey.isUnlimited || activeKey.totalFolders >= 999
-                  ? '👑 Aksè VIP Ilimite Aktif (Tout Katalòg la)'
-                  : `📁 Kredi Folder ki rete: ${activeKey.remainingFolders} / ${activeKey.totalFolders} Folder`}
+                  ? t.vipUnlimitedActiveBanner
+                  : `${t.folderCreditsRemainingLabel} ${activeKey.remainingFolders} / ${activeKey.totalFolders} ${t.folderWord}`}
               </span>
               <span aria-hidden="true" className="opacity-50">
                 ·
               </span>
-              <span className="font-mono">Kòd: {activeKey.code}</span>
+              <span className="font-mono">{t.gateCodeWord}: {activeKey.code}</span>
             </div>
             <button
               type="button"
@@ -975,7 +979,7 @@ export default function App() {
               className="inline-flex items-center gap-1.5 text-xs font-medium text-[#D1D5DB] hover:text-[#F3F4F6] underline underline-offset-4 cursor-pointer"
             >
               <LogOut className="h-3.5 w-3.5" />
-              <span>Chanje Kle VIP</span>
+              <span>{t.changeVipKeyBtn}</span>
             </button>
           </div>
         </div>
@@ -986,14 +990,13 @@ export default function App() {
         <div className="border-b border-[#10B981]/35 bg-[#10B981]/10">
           <div className="mx-auto flex flex-wrap items-center justify-between gap-3 max-w-6xl px-4 sm:px-6 py-2.5 text-xs sm:text-sm">
             <span className="font-semibold text-emerald-200 tabular-nums">
-              🎁 Ou gen {visitorProfile?.bonusCredits} Kredi Folder Gratis (Rekonpans Pataj) —
-              Klike &quot;⬇️ TELECHAJE .ZIP&quot; sou nenpòt folder!
+              {t.bonusCreditsBannerPrefix} {visitorProfile?.bonusCredits} {t.bonusCreditsBannerSuffix}
             </span>
             <a
               href="#pake-mizik"
               className="inline-flex items-center gap-1.5 text-xs font-extrabold text-[#10B981] hover:text-emerald-200 underline underline-offset-4"
             >
-              Chwazi Folder Ou
+              {t.chooseYourFolderLink}
             </a>
           </div>
         </div>
@@ -1006,14 +1009,15 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="max-w-3xl">
                 <p className="text-xs font-medium text-[#10B981] tracking-wide mb-2">
-                  Koleksyon DJ &amp; Fanatik 2026 · Pake .ZIP VirtualDJ Ready
+                  {t.heroEyebrow}
                 </p>
                 <h1 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold text-[#F3F4F6] tracking-tight leading-[1.12]">
-                  Folder Mizik VIP .ZIP pou DJ ak Amatè Bon Mizik
+                  {t.heroTitle}
                 </h1>
                 <p className="mt-2 text-sm sm:text-base text-[#D1D5DB] leading-relaxed">
-                  Chak folder <span className="font-mono text-[#F3F4F6]">.ZIP</span> genyen mizik an
-                  lòd pare pou telechaje. Antre Kle VIP ou a pou w jwenn tout folder ou yo.
+                  {t.heroSubtitlePrefix}{' '}
+                  <span className="font-mono text-[#F3F4F6]">.ZIP</span>{' '}
+                  {t.heroSubtitleSuffix}
                 </p>
               </div>
 
@@ -1025,7 +1029,7 @@ export default function App() {
                       className="inline-flex items-center justify-center gap-2 min-h-[42px] px-4 py-2.5 rounded-xl bg-[#10B981] hover:bg-[#059669] text-[#0B1410] font-display font-bold text-xs sm:text-sm whitespace-nowrap transition-colors"
                     >
                       <Unlock className="h-4 w-4" />
-                      <span>Telechaje .ZIP yo</span>
+                      <span>{t.downloadZipsHeroBtn}</span>
                     </a>
                     <button
                       type="button"
@@ -1033,7 +1037,7 @@ export default function App() {
                       className="inline-flex items-center justify-center gap-2 min-h-[42px] px-3.5 py-2.5 rounded-xl bg-[#262A30] border border-[#363B44] hover:border-[#10B981]/50 text-[#F3F4F6] text-xs sm:text-sm font-medium whitespace-nowrap transition-colors cursor-pointer"
                     >
                       <LogOut className="h-4 w-4" />
-                      <span>Chanje Kòd</span>
+                      <span>{t.changeCodeShortBtn}</span>
                     </button>
                   </>
                 ) : (
@@ -1047,7 +1051,7 @@ export default function App() {
                       className="inline-flex items-center justify-center gap-2 min-h-[42px] px-4 py-2.5 rounded-xl bg-[#10B981] hover:bg-[#059669] text-[#0B1410] font-display font-bold text-xs sm:text-sm whitespace-nowrap transition-colors cursor-pointer"
                     >
                       <KeyRound className="h-4 w-4" />
-                      <span>Debloke ak Kle VIP</span>
+                      <span>{t.unlockWithVipBtn}</span>
                     </button>
                     <button
                       type="button"
@@ -1058,7 +1062,7 @@ export default function App() {
                       className="inline-flex items-center justify-center gap-2 min-h-[42px] px-4 py-2.5 rounded-xl bg-[#262A30] border border-[#363B44] hover:border-[#10B981]/60 text-[#F3F4F6] text-xs sm:text-sm font-semibold whitespace-nowrap transition-colors cursor-pointer"
                     >
                       <Zap className="h-4 w-4 text-[#10B981]" />
-                      <span>Achte Kle VIP</span>
+                      <span>{t.buyVipKeyBtn}</span>
                     </button>
                   </>
                 )}
@@ -1083,12 +1087,11 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
               <div>
                 <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#F3F4F6] tracking-tight tabular-nums">
-                  Tout Folder Mizik .ZIP yo ({activePacksCount} Disponib · {comingSoonPacksCount} An
-                  Preparasyon)
+                  {t.catalogTitle(activePacksCount, comingSoonPacksCount)}
                 </h2>
                 <p className="mt-2 text-sm text-[#9CA3AF]">
-                  Chak pake se yon folder <span className="font-mono text-[#D1D5DB]">.ZIP</span>{' '}
-                  konplè ki gen tout mizik yo nimewote an lòd pare pou telechaje.
+                  {t.catalogSubtitlePrefix} <span className="font-mono text-[#D1D5DB]">.ZIP</span>{' '}
+                  {t.catalogSubtitleSuffix}
                 </p>
               </div>
             </div>
@@ -1107,11 +1110,11 @@ export default function App() {
                 <div className="inline-flex items-center gap-2 rounded-xl bg-[#10B981]/15 border border-[#10B981]/40 px-3.5 py-1.5 text-xs font-extrabold text-emerald-300">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                   <span>
-                    ✅ DISPONIB KOUNYE A (
-                    {normalizedCatalogQuery
-                      ? `${filteredAvailablePacks.length} / ${activePacksCount}`
-                      : activePacksCount}{' '}
-                    Folder .ZIP Pare)
+                    {t.availableNowBadge(
+                      normalizedCatalogQuery
+                        ? `${filteredAvailablePacks.length} / ${activePacksCount}`
+                        : String(activePacksCount)
+                    )}
                   </span>
                 </div>
               </div>
@@ -1121,8 +1124,8 @@ export default function App() {
                   <FolderArchive className="h-9 w-9 text-[#9CA3AF] mx-auto" />
                   <p className="text-sm font-semibold text-[#F3F4F6]">
                     {normalizedCatalogQuery
-                      ? `Pa gen okenn folder oswa mizik ki koresponn ak « ${catalogSearch.trim()} ».`
-                      : 'Pa gen okenn folder .ZIP pare pou telechaje pou moman an.'}
+                      ? t.emptySearchText(catalogSearch.trim())
+                      : t.emptyCatalogText}
                   </p>
                   {normalizedCatalogQuery && (
                     <button
@@ -1130,7 +1133,7 @@ export default function App() {
                       onClick={() => setCatalogSearch('')}
                       className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-[#10B981] hover:bg-[#059669] text-[#0B1410] text-xs font-bold transition-colors cursor-pointer"
                     >
-                      Efase Rechèch la
+                      {t.resetSearchBtn}
                     </button>
                   )}
                 </div>
@@ -1167,14 +1170,14 @@ export default function App() {
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#10B981]/15 text-emerald-300 font-mono text-[11px] font-bold">
-                                {pack.trackCount} Mizik
+                                {pack.trackCount} {t.tracksWord}
                               </span>
                               <span className="text-xs text-[#9CA3AF] font-medium">
                                 {pack.genre}
                               </span>
                               {matchedTracks.length > 0 && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 text-[11px] font-semibold">
-                                  🎵 {matchedTracks.length} mizik jwenn
+                                  {t.tracksFoundBadge(matchedTracks.length)}
                                 </span>
                               )}
                             </div>
@@ -1187,14 +1190,14 @@ export default function App() {
                               <p className="mt-1 text-xs text-emerald-200/90 truncate">
                                 {matchedTracks
                                   .slice(0, 3)
-                                  .map((t) =>
-                                    t.artist && t.artist !== 'Wesley VIP'
-                                      ? `${t.artist} - ${t.title}`
-                                      : t.title
+                                  .map((tItem) =>
+                                    tItem.artist && tItem.artist !== 'Wesley VIP'
+                                      ? `${tItem.artist} - ${tItem.title}`
+                                      : tItem.title
                                   )
                                   .join(' · ')}
                                 {matchedTracks.length > 3
-                                  ? ` (+${matchedTracks.length - 3} lòt)`
+                                  ? ` ${t.moreTracksWord(matchedTracks.length - 3)}`
                                   : ''}
                               </p>
                             )}
@@ -1211,7 +1214,7 @@ export default function App() {
                             >
                               <Download className="h-4 w-4 shrink-0" />
                               <span>
-                                {isPackaging ? 'Ap prepare .ZIP...' : '⬇️ TELECHAJE .ZIP'}
+                                {isPackaging ? t.preparingZipBtn : t.downloadZipBtn}
                               </span>
                             </button>
                           ) : (
@@ -1231,7 +1234,7 @@ export default function App() {
                               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#1C1F24] border border-[#363B44] hover:border-[#10B981] disabled:opacity-60 text-[#F3F4F6] text-xs sm:text-sm font-bold whitespace-nowrap transition-colors cursor-pointer"
                             >
                               <Lock className="h-4 w-4 text-[#10B981] shrink-0" />
-                              <span>🔒 Mete Kle VIP pou Telechaje</span>
+                              <span>{t.enterVipToDownloadBtn}</span>
                             </button>
                           )}
 
@@ -1259,37 +1262,36 @@ export default function App() {
               )}
             </div>
 
-            {/* 2. COUNTRY-AWARE TRENDING CATALOG ("🔥 TANDANS NAN PEYI W") */}
+            {/* 2. COUNTRY-AWARE TRENDING CATALOG */}
             <div className="pt-8 border-t border-[#363B44]">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-7">
                 <div>
                   <div className="inline-flex items-center gap-2 rounded-xl bg-amber-500/15 border border-amber-400/40 px-3.5 py-1.5 text-xs font-extrabold text-amber-300 mb-3">
                     <Flame className="h-4 w-4 shrink-0" />
                     <span>
-                      🔥 TANDANS NAN PEYI W · {selectedCountry.flag} {selectedCountry.name}
+                      {t.trendingBadgePrefix} {selectedCountry.flag} {selectedCountry.name}
                     </span>
                   </div>
                   <h3 className="font-display text-xl sm:text-2xl font-bold text-[#F3F4F6] tracking-tight">
-                    🔥 TANDANS NAN PEYI W (
-                    {normalizedCatalogQuery
-                      ? `${filteredComingSoonPacks.length} / ${comingSoonPacksCount}`
-                      : comingSoonPacksCount}{' '}
-                    Pake .ZIP An Preparasyon)
+                    {t.trendingTitle(
+                      normalizedCatalogQuery
+                        ? `${filteredComingSoonPacks.length} / ${comingSoonPacksCount}`
+                        : String(comingSoonPacksCount)
+                    )}
                   </h3>
                   <p className="mt-1.5 text-xs sm:text-sm text-[#9CA3AF] max-w-2xl">
-                    Pake ki pi cho yo pou{' '}
+                    {t.trendingSubtitlePrefix}{' '}
                     <span className="text-[#D1D5DB] font-semibold">
                       {selectedCountry.flag} {selectedCountry.name}
                     </span>
-                    . Klike sou « 🔔 Mande Pake Sa a » pou w di DJ Wesley kilès pou l lage pi vit
-                    (pa depanse okenn kredi VIP!).
+                    . {t.trendingSubtitleSuffix}
                   </p>
                 </div>
               </div>
 
               {filteredComingSoonPacks.length === 0 ? (
                 <div className="rounded-2xl border border-[#363B44] bg-[#262A30] p-6 text-center text-xs sm:text-sm text-[#9CA3AF]">
-                  Pa gen okenn pake an preparasyon ki koresponn ak « {catalogSearch.trim()} ».
+                  {t.emptyTrendingSearch(catalogSearch.trim())}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1311,7 +1313,7 @@ export default function App() {
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 font-mono text-[11px] font-bold">
-                              AN ATANT / BYENTO
+                              {t.comingSoonPill}
                             </span>
                             <span className="text-xs text-[#9CA3AF] font-medium">
                               {pack.genre} • {selectedCountry.flag} {selectedCountry.name}
@@ -1338,12 +1340,12 @@ export default function App() {
                           {alreadyRequested ? (
                             <>
                               <CheckCircle2 className="h-4 w-4 shrink-0" />
-                              <span>✅ Demann Voye (Mande Ankò)</span>
+                              <span>{t.requestSentBtn}</span>
                             </>
                           ) : (
                             <>
                               <Bell className="h-4 w-4 shrink-0" />
-                              <span>{isSending ? 'Ap voye demann...' : '🔔 Mande Pake Sa a'}</span>
+                              <span>{isSending ? t.sendingRequestBtn : t.requestPackBtn}</span>
                             </>
                           )}
                         </button>
@@ -1361,41 +1363,37 @@ export default function App() {
         <section id="koman-sa-mache" className="py-14 sm:py-16">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#F3F4F6] tracking-tight mb-8">
-              Kòman sa Mache nan 3 Etap
+              {t.howTitle}
             </h2>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="rounded-2xl bg-[#262A30] border border-[#363B44] p-6">
-                <p className="font-mono text-xs text-[#10B981] font-semibold">01. Achte Otomatik</p>
+                <p className="font-mono text-xs text-[#10B981] font-semibold">{t.step1Tag}</p>
                 <h3 className="mt-2 font-display text-lg font-bold text-[#F3F4F6]">
-                  Peye An Liy oswa Sèvi ak Kat Prepeye
+                  {t.step1Title}
                 </h3>
                 <p className="mt-2 text-sm text-[#D1D5DB] leading-relaxed">
-                  Chwazi plan ou bezwen an (10, 21, 36, 55 Folder oswa VIP Ilimite) epi peye ak Kat
-                  Vityèl, Kat Bankè oswa Crypto USDT pou w resevwa Kle VIP ou a otomatikman.
+                  {t.step1Desc}
                 </p>
               </div>
 
               <div className="rounded-2xl bg-[#262A30] border border-[#363B44] p-6">
-                <p className="font-mono text-xs text-[#10B981] font-semibold">02. Debloke</p>
+                <p className="font-mono text-xs text-[#10B981] font-semibold">{t.step2Tag}</p>
                 <h3 className="mt-2 font-display text-lg font-bold text-[#F3F4F6]">
-                  Antre Kle VIP ou a
+                  {t.step2Title}
                 </h3>
                 <p className="mt-2 text-sm text-[#D1D5DB] leading-relaxed">
-                  Antre kòd kout ou a (egzanp <span className="font-mono">W#84K2</span>) pou w
-                  debloke bouton vèt « ⬇️ TELECHAJE .ZIP » yo sou tout folder yo.
+                  {t.step2Desc}
                 </p>
               </div>
 
               <div className="rounded-2xl bg-[#262A30] border border-[#363B44] p-6">
-                <p className="font-mono text-xs text-[#10B981] font-semibold">03. Telechaje .ZIP</p>
+                <p className="font-mono text-xs text-[#10B981] font-semibold">{t.step3Tag}</p>
                 <h3 className="mt-2 font-display text-lg font-bold text-[#F3F4F6]">
-                  Pare pou VirtualDJ 8 / 2024+
+                  {t.step3Title}
                 </h3>
                 <p className="mt-2 text-sm text-[#D1D5DB] leading-relaxed">
-                  Chak folder .ZIP vini ak MP3 nimewote an lòd,{' '}
-                  <span className="font-mono">000 - PLAYLIST_VIRTUALDJ.m3u</span>, ak{' '}
-                  <span className="font-mono">VIRTUALDJ_IMPORT_DATABASE.xml</span>.
+                  {t.step3Desc}
                 </p>
               </div>
             </div>
@@ -1406,7 +1404,7 @@ export default function App() {
       {/* Clean Footer */}
       <footer className="border-t border-[#363B44] bg-[#202429]">
         <div className="mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 max-w-6xl px-4 sm:px-6 py-8 text-xs text-[#9CA3AF]">
-          <p>© {new Date().getFullYear()} WESLEY MUSIC PACKS (by DJ WESLEY). Tout dwa rezève.</p>
+          <p>{t.footerRights(new Date().getFullYear())}</p>
           <div className="flex flex-wrap items-center gap-6">
             <button
               type="button"
@@ -1416,14 +1414,14 @@ export default function App() {
               }}
               className="hover:text-[#F3F4F6] transition-colors cursor-pointer"
             >
-              Antre Kle VIP
+              {t.enterVipKeyBtn}
             </button>
             <button
               type="button"
               onClick={() => setIsAdminOpen(true)}
               className="hover:text-[#F3F4F6] transition-colors cursor-pointer"
             >
-              Admin Panel
+              {t.navAdmin}
             </button>
             <PWAInstallButton variant="footer" />
           </div>
@@ -1540,8 +1538,12 @@ export default function App() {
                   </span>
                   <span className="font-display font-bold text-xs sm:text-sm text-[#F3F4F6] tracking-tight truncate">
                     {downloadProgress.status === 'completed'
-                      ? '✅ Telechajman Lanse! Gade nan dosye Downloads ou.'
-                      : `📥 Ap prepare .ZIP la... ${downloadProgress.current} / ${downloadProgress.total} (${downloadProgress.percent}%)`}
+                      ? t.downloadLaunchedToast
+                      : t.preparingZipOverlay(
+                          downloadProgress.current,
+                          downloadProgress.total,
+                          downloadProgress.percent
+                        )}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1552,7 +1554,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setDownloadProgress(null)}
-                      aria-label="Fèmen bwat telechajman an"
+                      aria-label={t.modalCloseAria}
                       className="ml-1 rounded-md px-1.5 py-0.5 text-xs font-bold text-[#9CA3AF] hover:bg-[#363B44] hover:text-[#F3F4F6] cursor-pointer"
                     >
                       ✕
@@ -1576,8 +1578,12 @@ export default function App() {
               <div className="flex items-center justify-between gap-2 text-xs text-[#9CA3AF]">
                 <span>
                   {downloadProgress.status === 'completed'
-                    ? 'Fichye .ZIP la anrejistre nan dosye Downloads ou.'
-                    : `📥 Ap prepare .ZIP la... ${downloadProgress.current} / ${downloadProgress.total} (${downloadProgress.percent}%)`}
+                    ? t.savedToDownloadsNote
+                    : t.preparingZipOverlay(
+                        downloadProgress.current,
+                        downloadProgress.total,
+                        downloadProgress.percent
+                      )}
                 </span>
                 {downloadProgress.status === 'completed' &&
                   downloadProgress.zipFilename &&
@@ -1599,7 +1605,7 @@ export default function App() {
                       }}
                       className="font-bold text-emerald-300 hover:text-emerald-200 underline underline-offset-2 cursor-pointer shrink-0"
                     >
-                      ⬇️ Klike Isit Si L Pa Kòmanse
+                      {t.clickIfNotStartedBtn}
                     </button>
                   )}
               </div>

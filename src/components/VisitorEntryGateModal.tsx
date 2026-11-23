@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ShieldCheck, ArrowRight, CheckCircle2, AlertTriangle, Lock } from 'lucide-react';
 import { CountrySelector } from './CountrySelector';
+import { LanguageSelector } from './LanguageSelector';
+import { useLanguage } from '../contexts/LanguageContext';
 import { getCountryByCode, getRegionCurrencyBadge } from '../data/countries';
 import {
   VisitorProfile,
@@ -25,10 +27,12 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
   onCompleted,
   onOpenAdmin,
 }) => {
+  const { t, hasManualOverride, autoSuggestLangForCountry } = useLanguage();
   const [fullName, setFullName] = useState('');
   const [phoneInput, setPhoneInput] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [manualLangPickedInGate, setManualLangPickedInGate] = useState<boolean>(hasManualOverride);
 
   const selectedCountry = useMemo(
     () => getCountryByCode(selectedCountryCode),
@@ -76,8 +80,7 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
 
     if (!result.success || !result.visitor) {
       setSubmitError(
-        result.error ??
-          `⚠️ Nimewo telefòn sa a pa konpatib ak peyi ${selectedCountry.name} (+${dialCode})! Tanpri antre yon vrè nimewo telefòn ki valid pou peyi sa a.`
+        result.error ?? t.gateInvalidPhoneFallback(selectedCountry.name, dialCode)
       );
       return;
     }
@@ -98,13 +101,13 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="font-mono text-[11px] font-bold uppercase tracking-widest text-[#10B981]">
-                WESLEY MUSIC PACKS · AKSÈ VIZITÈ
+                {t.gateEyebrow}
               </p>
               <h2
                 id="visitor-gate-heading"
                 className="mt-1 font-display text-xl sm:text-2xl font-extrabold text-[#F3F4F6] tracking-tight"
               >
-                🎧 Byenvini! Antre Enfòmasyon Ou
+                {t.gateTitle}
               </h2>
             </div>
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#10B981]/15 border border-[#10B981]/35 text-[#10B981]">
@@ -112,19 +115,18 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
             </div>
           </div>
           <p className="mt-2 text-xs sm:text-sm text-[#D1D5DB] leading-relaxed">
-            Ranpli non konplè ou, chwazi peyi w, epi mete yon vrè nimewo telefòn ki mache ak peyi
-            ou chwazi a pou w antre nan katalòg la.
+            {t.gateSubtitle}
           </p>
         </div>
 
-        <form onSubmit={(e) => void handleSubmit(e)} className="p-6 space-y-5">
+        <form onSubmit={(e) => void handleSubmit(e)} className="p-6 space-y-4">
           {/* 1. Full Name */}
           <div>
             <label
               htmlFor="visitor-full-name"
               className="block text-xs sm:text-sm font-bold text-[#F3F4F6] mb-2"
             >
-              👤 Non Konplè Ou
+              {t.gateFullNameLabel}
             </label>
             <input
               id="visitor-full-name"
@@ -137,7 +139,7 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
                 setFullName(e.target.value);
                 if (submitError) setSubmitError(null);
               }}
-              placeholder="Ex: Jean-Baptiste Wesley"
+              placeholder={t.gateFullNamePlaceholder}
               className="w-full rounded-xl bg-[#1C1F24] border border-[#363B44] px-4 py-3 text-sm text-[#F3F4F6] placeholder:text-[#9CA3AF] focus:border-[#10B981] focus:outline-none"
             />
           </div>
@@ -145,34 +147,45 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
           {/* 2. Country */}
           <div>
             <span className="block text-xs sm:text-sm font-bold text-[#F3F4F6] mb-2">
-              🌍 Peyi Ou
+              {t.gateCountryLabel}
             </span>
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#1C1F24] border border-[#363B44] px-3.5 py-2.5">
               <CountrySelector
                 selectedCountryCode={selectedCountry.code}
                 onSelectCountry={(code) => {
                   onSelectCountry(code);
+                  if (!manualLangPickedInGate) {
+                    autoSuggestLangForCountry(code, true);
+                  }
                   setSubmitError(null);
                 }}
                 align="left"
               />
               <span className="font-mono text-xs font-semibold text-emerald-300">
-                Kòd: +{dialCode} · {currencyBadge}
+                {t.gateCodeWord}: +{dialCode} · {currencyBadge}
               </span>
             </div>
           </div>
 
-          {/* 3. Country-Validated Phone Number */}
+          {/* 3. Language Selector (Auto-suggested by country + Manual Override) */}
+          <LanguageSelector
+            variant="gate"
+            onManualSelect={() => {
+              setManualLangPickedInGate(true);
+            }}
+          />
+
+          {/* 4. Country-Validated Phone Number */}
           <div>
             <label
               htmlFor="visitor-phone-number"
               className="block text-xs sm:text-sm font-bold text-[#F3F4F6] mb-2"
             >
-              📱 Nimewo Telefòn Ou / Phone Number
+              {t.gatePhoneLabel}
             </label>
             <div className="flex items-stretch rounded-xl bg-[#1C1F24] border border-[#363B44] focus-within:border-[#10B981] overflow-hidden transition-colors">
               <div
-                aria-label={`Kòd peyi +${dialCode}`}
+                aria-label={`${t.gateCodeWord} +${dialCode}`}
                 className="flex items-center gap-1.5 bg-[#202429] border-r border-[#363B44] px-3.5 py-3 text-sm font-mono font-bold text-emerald-300 shrink-0 select-none"
               >
                 <span aria-hidden="true">{selectedCountry.flag}</span>
@@ -201,7 +214,7 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
                   <p className="inline-flex items-center gap-1.5 text-xs font-medium text-[#10B981]">
                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                     <span>
-                      Nimewo valid pou {selectedCountry.flag} {selectedCountry.name}:{' '}
+                      {t.gatePhoneValidPrefix} {selectedCountry.flag} {selectedCountry.name}:{' '}
                       <span className="font-mono font-bold">
                         {liveValidation.formattedInternational}
                       </span>
@@ -211,8 +224,9 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
                   <p className="inline-flex items-start gap-1.5 text-xs font-medium text-amber-300/90">
                     <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                     <span>
-                      Antre nimewo ki kòrèk pou {selectedCountry.flag} {selectedCountry.name} (+
-                      {dialCode}) — egzanp: <span className="font-mono">{phonePlaceholder}</span>
+                      {t.gatePhoneExamplePrefix} {selectedCountry.flag} {selectedCountry.name} (+
+                      {dialCode}) — {t.gatePhoneExampleWord}:{' '}
+                      <span className="font-mono">{phonePlaceholder}</span>
                     </span>
                   </p>
                 )}
@@ -235,21 +249,19 @@ export const VisitorEntryGateModal: React.FC<VisitorEntryGateModalProps> = ({
             disabled={isSubmitting}
             className="w-full min-h-[50px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-60 text-[#0B1410] font-display font-extrabold text-sm sm:text-base transition-colors cursor-pointer shadow-[0_8px_24px_rgba(16,185,129,0.25)]"
           >
-            <span>
-              {isSubmitting ? 'Ap verifye nimewo ou a...' : '🚀 ANTRE NAN SIT LA KOUNYE A'}
-            </span>
+            <span>{isSubmitting ? t.gateSubmittingBtn : t.gateSubmitBtn}</span>
             <ArrowRight className="h-4 w-4 shrink-0" />
           </button>
 
           <div className="pt-2 border-t border-[#363B44] flex items-center justify-between text-[11px] text-[#9CA3AF]">
-            <span>🔒 Enfòmasyon ou yo pwoteje pou verifikasyon kliyan sèlman.</span>
+            <span>{t.gatePrivacyNote}</span>
             <button
               type="button"
               onClick={onOpenAdmin}
               className="inline-flex items-center gap-1 text-[#D1D5DB] hover:text-emerald-300 transition-colors cursor-pointer shrink-0 ml-2"
             >
               <Lock className="h-3 w-3" />
-              <span>Admin VIP</span>
+              <span>{t.navAdmin}</span>
             </button>
           </div>
         </form>

@@ -24,6 +24,7 @@ import {
 import { getUsdtAmountForPlan } from '../data/paymentOrders';
 import { CountrySelector } from './CountrySelector';
 import { ZipFilenameText } from './ZipFilenameText';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface WelcomeVipModalProps {
   isOpen: boolean;
@@ -50,6 +51,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
   onUnlockOrDownloadPack,
   onBrowsePacks,
 }) => {
+  const { t, getPlanText } = useLanguage();
   const [keyInput, setKeyInput] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isValidatingKey, setIsValidatingKey] = useState(false);
@@ -66,6 +68,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
 
   const selectedPlan =
     FOLDER_PLANS.find((p) => p.id === selectedPlanId) ?? FOLDER_PLANS[1] ?? FOLDER_PLANS[0];
+  const selectedPlanText = getPlanText(selectedPlan.id);
   const selectedCountry = getCountryByCode(selectedCountryCode);
   const isHaiti = selectedCountryCode.trim().toUpperCase() === 'HT';
   const selectedPlanPrice = getFormattedPlanPrice(selectedPlan.id, selectedCountryCode);
@@ -80,7 +83,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
     const result = await validateVipKeyCodeRemote(keyInput);
     setIsValidatingKey(false);
     if (result.status !== 'valid' || !result.record) {
-      setErrorMsg(result.error ?? '🚫 KÒD SA A DEJA SÈVI / EKSPIRE');
+      setErrorMsg(result.error ?? t.expiredKeyError);
       return;
     }
     setErrorMsg(null);
@@ -98,7 +101,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
         <button
           type="button"
           onClick={onBrowsePacks}
-          aria-label="Fèmen fenèt la"
+          aria-label={t.modalCloseAria}
           className="absolute top-4 right-4 flex h-10 w-10 items-center justify-center rounded-lg text-[#9CA3AF] hover:bg-[#363B44] hover:text-[#F3F4F6] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#10B981]"
         >
           <X className="h-5 w-5" />
@@ -112,19 +115,18 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                 <CheckCircle2 className="h-5 w-5 shrink-0" />
                 <span>
                   {activeKey.isUnlimited || activeKey.totalFolders >= 999
-                    ? '👑 Aksè VIP Ilimite Aktif (Tout Katalòg la)'
-                    : `📁 Kredi Folder ki rete: ${activeKey.remainingFolders} / ${activeKey.totalFolders} Folder`}
+                    ? t.vipUnlimitedActiveBanner
+                    : `${t.folderCreditsRemainingLabel} ${activeKey.remainingFolders} / ${activeKey.totalFolders} ${t.folderWord}`}
                 </span>
               </div>
               <h2
                 id="vip-welcome-heading"
                 className="font-display text-2xl font-bold text-[#F3F4F6] tracking-tight"
               >
-                Chwazi Folder .ZIP pou w Telechaje
+                {t.chooseZipModalTitle}
               </h2>
               <p className="mt-1.5 text-sm text-[#9CA3AF]">
-                Kòd <span className="font-mono text-[#D1D5DB]">{activeKey.code}</span> aktif.
-                Klike sou nenpòt folder pou w telechaje .ZIP la (1 Kredi Folder).
+                {t.activeCodeModalDesc(activeKey.code)}
               </p>
             </div>
 
@@ -155,15 +157,15 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                           }`}
                         >
                           {isComingSoon
-                            ? `${pack.genre} · ⏳ AN PREPARASYON`
-                            : `${pack.genre} · ${pack.trackCount} Mizik an Lòd`}
+                            ? `${pack.genre} · ${t.comingSoonOrderLabel}`
+                            : `${pack.genre} · ${t.orderedTracksLabel(pack.trackCount)}`}
                         </p>
                       </div>
                     </div>
 
                     {isComingSoon ? (
                       <span className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-[#262A30] border border-amber-500/35 px-2.5 py-2 text-[11px] font-bold text-amber-300 whitespace-nowrap">
-                        ⏳ Poko Disponib
+                        {t.notAvailableYetBadge}
                       </span>
                     ) : (
                       <button
@@ -172,7 +174,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                         className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-[#10B981] hover:bg-[#059669] text-[#0B1410] font-semibold text-xs px-3 py-2 transition-colors cursor-pointer whitespace-nowrap"
                       >
                         <Download className="h-3.5 w-3.5" />
-                        <span>⬇️ TELECHAJE .ZIP</span>
+                        <span>{t.downloadZipBtn}</span>
                       </button>
                     )}
                   </div>
@@ -186,33 +188,29 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                 onClick={onBrowsePacks}
                 className="text-sm font-medium text-[#D1D5DB] hover:text-[#F3F4F6] underline underline-offset-4 transition-colors cursor-pointer"
               >
-                Wè tout folder .ZIP yo sou sit la
+                {t.viewAllFoldersOnSite}
               </button>
             </div>
           </div>
         ) : (
           /* Clean 2-Way VIP Access Modal: Top Prepaid/VIP Code + Bottom Automated Online Checkout */
           <div className="space-y-6">
-            {/* TOP BOX: 🔑 OU GEN YON KLE VIP / KAT PREPEYE? */}
+            {/* TOP BOX: HAVE A VIP KEY / PREPAID CODE */}
             <div className="rounded-xl border border-[#363B44] bg-[#202429] p-4 sm:p-5">
               <div className="pr-8">
                 <h2
                   id="vip-welcome-heading"
                   className="font-display text-lg sm:text-xl font-bold text-[#F3F4F6] tracking-tight"
                 >
-                  🔑 OU GEN YON KLE VIP / KAT PREPEYE?
+                  {t.haveVipKeyHeading}
                 </h2>
                 {pendingPack ? (
                   <p className="mt-1.5 text-xs sm:text-sm text-[#D1D5DB] leading-relaxed">
-                    Antre kòd ou a pou w telechaje{' '}
-                    <span className="font-semibold font-mono text-emerald-300">
-                      {formatZipFolderFilename(pendingPack)}
-                    </span>
-                    .
+                    {t.enterCodeForFolderDesc(formatZipFolderFilename(pendingPack))}
                   </p>
                 ) : (
                   <p className="mt-1.5 text-xs sm:text-sm text-[#9CA3AF] leading-relaxed">
-                    Antre Kle VIP oswa Kòd Kat Prepeye ou a anba a pou w debloke tout folder .ZIP yo touswit.
+                    {t.enterCodeGeneralDesc}
                   </p>
                 )}
               </div>
@@ -220,7 +218,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
               <form onSubmit={(e) => void handleSubmit(e)} className="mt-4 space-y-3" noValidate>
                 <div>
                   <label htmlFor="vip-key-input" className="sr-only">
-                    Antre Kle VIP ou
+                    {t.enterVipKeyBtn}
                   </label>
                   <input
                     id="vip-key-input"
@@ -230,7 +228,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                       setKeyInput(e.target.value.toUpperCase());
                       if (errorMsg) setErrorMsg(null);
                     }}
-                    placeholder="Antre Kle VIP ou isit la... ex: W#84K2"
+                    placeholder={t.vipKeyPlaceholder}
                     autoComplete="off"
                     spellCheck={false}
                     className="w-full rounded-xl bg-[#1C1F24] border border-[#363B44] px-4 py-3 text-base font-mono text-[#F3F4F6] placeholder:font-sans placeholder:text-[#9CA3AF] focus:border-[#10B981] focus:outline-none focus:ring-2 focus:ring-[#10B981]/25 transition-colors"
@@ -252,9 +250,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                   disabled={isValidatingKey}
                   className="w-full min-h-[48px] rounded-xl bg-[#10B981] hover:bg-[#059669] active:bg-emerald-700 disabled:opacity-65 text-[#0B1410] font-display font-extrabold text-sm sm:text-base tracking-tight px-5 py-3 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
                 >
-                  {isValidatingKey
-                    ? '⏳ Ap verifye Kle VIP la...'
-                    : '🔓 DEBLOKE AKSÈ VIP KOUNYE A'}
+                  {isValidatingKey ? t.verifyingVipBtn : t.unlockVipAccessBtn}
                 </button>
               </form>
             </div>
@@ -263,19 +259,19 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
             <div className="relative flex items-center justify-center">
               <div className="w-full border-t border-[#363B44]" />
               <span className="absolute bg-[#262A30] px-3 text-xs font-semibold tracking-wider text-[#9CA3AF] whitespace-nowrap">
-                — OUBYEN —
+                {t.orDivider}
               </span>
             </div>
 
-            {/* BOTTOM BOX: 🛒 ACHTE KLE VIP OTOMATIK AN LIY */}
+            {/* BOTTOM BOX: BUY VIP KEY ONLINE AUTOMATICALLY */}
             <div className="rounded-xl border border-[#10B981]/35 bg-[#202429] p-4 sm:p-5 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5">
                 <div>
                   <h3 className="font-display text-base sm:text-lg font-bold text-[#F3F4F6] tracking-tight">
-                    🛒 ACHTE KLE VIP OTOMATIK AN LIY
+                    {t.buyVipOnlineHeading}
                   </h3>
                   <p className="mt-0.5 text-xs text-[#9CA3AF]">
-                    Pri pou {selectedCountry.flag}{' '}
+                    {t.pricesForLabel} {selectedCountry.flag}{' '}
                     <span className="text-[#D1D5DB] font-semibold">{selectedCountry.name}</span> (
                     <span className="font-mono text-emerald-300">{currencyBadge}</span>)
                   </p>
@@ -291,11 +287,12 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
               </div>
 
               {/* Plan Selector Grid (4 folder tiers + full-width Gold/Emerald Unlimited VIP tier) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" role="radiogroup" aria-label="Chwazi Plan Folder VIP">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" role="radiogroup" aria-label={t.buyVipOnlineHeading}>
                 {FOLDER_PLANS.map((plan) => {
                   const isSelected = selectedPlan.id === plan.id;
                   const isUnlimited = plan.id === 'unlimited-vip';
                   const planPrice = getFormattedPlanPrice(plan.id, selectedCountryCode);
+                  const planText = getPlanText(plan.id);
                   return (
                     <button
                       key={plan.id}
@@ -324,17 +321,17 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                             isUnlimited ? 'text-amber-300' : 'text-[#F3F4F6]'
                           }`}
                         >
-                          {plan.shortLabel}
+                          {planText.shortLabel}
                         </span>
                         <div className="flex items-center gap-1 flex-wrap">
                           {plan.recommended && (
                             <span className="rounded bg-amber-400/20 border border-amber-400/45 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-amber-300">
-                              POPILÈ
+                              {t.popularBadge}
                             </span>
                           )}
-                          {plan.badge && (
+                          {planText.badge && (
                             <span className="rounded bg-[#10B981]/15 border border-emerald-400/40 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
-                              {plan.badge}
+                              {planText.badge}
                             </span>
                           )}
                         </div>
@@ -347,7 +344,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                         {planPrice}
                       </span>
                       <span className="mt-0.5 text-[11px] font-mono text-[#9CA3AF]">
-                        {plan.subtitle}
+                        {planText.subtitle}
                       </span>
                     </button>
                   );
@@ -363,15 +360,15 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                 <Zap className="h-4 w-4 shrink-0" />
                 <span>
                   {isHaiti
-                    ? `⚡ PEYE AK NATCASH (${selectedPlan.shortLabel} · ${selectedPlanPrice})`
-                    : `💳 Peye ak Kat Visa / Mastercard / Apple Pay (${selectedPlan.shortLabel} · ${selectedUsdtAmount} USDT)`}
+                    ? t.payNatcashBtn(selectedPlanText.shortLabel, selectedPlanPrice)
+                    : t.payCardBtn(selectedPlanText.shortLabel, selectedUsdtAmount)}
                 </span>
               </button>
 
               <p className="text-xs text-[#D1D5DB] text-center leading-relaxed pt-0.5">
                 {isHaiti
-                  ? '🇭🇹 Ayiti: Peye dirèkteman ak Natcash (+509 56568810) epi resevwa Kle VIP ou touswit sou ekran an!'
-                  : `🌐 Entènasyonal (${selectedCountry.flag}): Peye ak Kat Visa / Mastercard / Apple Pay oswa voye USDT (TRC20) pou w resevwa Kle VIP ou touswit!`}
+                  ? t.haitiCheckoutFootnote
+                  : t.intlCheckoutFootnote(selectedCountry.flag)}
               </p>
             </div>
 
@@ -381,7 +378,7 @@ export const WelcomeVipModal: React.FC<WelcomeVipModalProps> = ({
                 onClick={onBrowsePacks}
                 className="inline-flex items-center justify-center min-h-[38px] px-3 py-1.5 text-sm font-medium text-[#9CA3AF] hover:text-[#F3F4F6] underline underline-offset-4 transition-colors cursor-pointer"
               >
-                👀 Gade Folder .ZIP yo Anvan
+                {t.browseFoldersFirstBtn}
               </button>
             </div>
           </div>

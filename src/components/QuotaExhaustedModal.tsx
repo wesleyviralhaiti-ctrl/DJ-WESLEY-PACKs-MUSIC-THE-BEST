@@ -8,6 +8,7 @@ import {
 } from '../data/countries';
 import { getUsdtAmountForPlan } from '../data/paymentOrders';
 import { CountrySelector } from './CountrySelector';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface QuotaExhaustedModalProps {
   isOpen: boolean;
@@ -28,12 +29,14 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
   onClose,
   onEnterNewKey,
 }) => {
+  const { t, getPlanText } = useLanguage();
   const [selectedPlanId, setSelectedPlanId] = useState<string>('21-folder');
 
   if (!isOpen) return null;
 
   const selectedPlan =
     FOLDER_PLANS.find((p) => p.id === selectedPlanId) ?? FOLDER_PLANS[1] ?? FOLDER_PLANS[0];
+  const selectedPlanText = getPlanText(selectedPlan.id);
   const selectedCountry = getCountryByCode(selectedCountryCode);
   const isHaiti = selectedCountryCode.trim().toUpperCase() === 'HT';
   const selectedPlanPrice = getFormattedPlanPrice(selectedPlan.id, selectedCountryCode);
@@ -51,7 +54,7 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Fèmen fenèt la"
+          aria-label={t.modalCloseAria}
           className="absolute top-4 right-4 flex h-10 w-10 items-center justify-center rounded-lg text-[#9CA3AF] hover:bg-[#363B44] hover:text-[#F3F4F6] transition-colors cursor-pointer"
         >
           <X className="h-5 w-5" />
@@ -62,23 +65,22 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
             id="quota-exhausted-heading"
             className="font-display text-xl sm:text-2xl font-bold text-[#F3F4F6] tracking-tight"
           >
-            ⏰ PLAN OU FINI!
+            {t.planFinishedHeading}
           </h2>
 
           {exhaustedKeyCode && (
             <p className="text-xs font-mono text-rose-300">
-              Kle: {exhaustedKeyCode} · 0 Folder .ZIP ki rete
+              {t.exhaustedKeyInfo(exhaustedKeyCode)}
             </p>
           )}
 
           <p className="text-sm sm:text-base text-[#D1D5DB] leading-relaxed">
-            Ou fin telechaje tout folder .ZIP ki te nan plan ou a. Chwazi yon nouvo plan anba a
-            pou w resevwa yon lòt Kle VIP otomatikman oswa antre yon Kòd Prepeye!
+            {t.planFinishedDesc}
           </p>
 
           <div className="flex items-center justify-between gap-2 pt-1 text-left">
             <span className="text-xs text-[#9CA3AF]">
-              Pri pou {selectedCountry.flag}{' '}
+              {t.pricesForLabel} {selectedCountry.flag}{' '}
               <strong className="text-[#D1D5DB]">{selectedCountry.name}</strong> (
               <span className="font-mono text-emerald-300">{currencyBadge}</span>)
             </span>
@@ -95,6 +97,7 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
               const isSelected = selectedPlan.id === plan.id;
               const isUnlimited = plan.id === 'unlimited-vip';
               const planPrice = getFormattedPlanPrice(plan.id, selectedCountryCode);
+              const planText = getPlanText(plan.id);
               return (
                 <button
                   key={plan.id}
@@ -121,17 +124,17 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
                         isUnlimited ? 'text-amber-300' : 'text-[#F3F4F6]'
                       }`}
                     >
-                      {plan.shortLabel}
+                      {planText.shortLabel}
                     </span>
                     <div className="flex items-center gap-1 flex-wrap">
                       {plan.recommended && (
                         <span className="rounded bg-amber-400/20 border border-amber-400/45 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-amber-300">
-                          POPILÈ
+                          {t.popularBadge}
                         </span>
                       )}
-                      {plan.badge && (
+                      {planText.badge && (
                         <span className="rounded bg-[#10B981]/15 border border-emerald-400/40 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
-                          {plan.badge}
+                          {planText.badge}
                         </span>
                       )}
                     </div>
@@ -144,7 +147,7 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
                     {planPrice}
                   </div>
                   <div className="text-[11px] font-mono text-[#9CA3AF] mt-0.5">
-                    {plan.subtitle}
+                    {planText.subtitle}
                   </div>
                 </button>
               );
@@ -160,8 +163,8 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
               <Zap className="h-4 w-4 shrink-0" />
               <span>
                 {isHaiti
-                  ? `⚡ PEYE AK NATCASH (${selectedPlan.shortLabel} · ${selectedPlanPrice})`
-                  : `💳 Peye ak Kat Visa / Mastercard / Apple Pay (${selectedPlan.shortLabel} · ${selectedUsdtAmount} USDT)`}
+                  ? t.payNatcashBtn(selectedPlanText.shortLabel, selectedPlanPrice)
+                  : t.payCardBtn(selectedPlanText.shortLabel, selectedUsdtAmount)}
               </span>
             </button>
 
@@ -171,13 +174,11 @@ export const QuotaExhaustedModal: React.FC<QuotaExhaustedModalProps> = ({
               className="inline-flex w-full min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#363B44] bg-[#1C1F24] hover:border-[#10B981]/60 text-[#F3F4F6] text-sm font-semibold px-4 py-2.5 transition-colors cursor-pointer"
             >
               <KeyRound className="h-4 w-4 text-[#10B981]" />
-              <span>🔑 Antre yon Nouvo Kle VIP / Kat Prepeye</span>
+              <span>{t.enterNewVipKeyBtn}</span>
             </button>
 
             <p className="text-xs text-[#9CA3AF] leading-relaxed pt-1">
-              {isHaiti
-                ? '🇭🇹 Ayiti: Peye dirèkteman ak Natcash (+509 56568810) epi resevwa Kle VIP ou touswit sou ekran an!'
-                : `🌐 Entènasyonal (${selectedCountry.flag}): Peye an liy ak USDT (TRC20) pou w resevwa Kle VIP ou touswit sou ekran an!`}
+              {isHaiti ? t.haitiCheckoutFootnote : t.intlUsdtFootnote(selectedCountry.flag)}
             </p>
           </div>
         </div>

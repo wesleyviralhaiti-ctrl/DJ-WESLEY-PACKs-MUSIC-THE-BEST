@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Smartphone, Share, PlusSquare, X } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface PWAInstallButtonProps {
   variant?: 'hero' | 'footer';
@@ -8,6 +9,7 @@ interface PWAInstallButtonProps {
 
 export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'hero' }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const { t } = useLanguage();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
   // Suppress completely when already running in standalone full-screen mode
@@ -28,7 +30,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
         }
       >
         <Smartphone className="h-4 w-4 shrink-0" />
-        <span>Enstale sou Telefòn</span>
+        <span>{t.installOnPhoneBtn}</span>
       </button>
     );
   }
@@ -47,7 +49,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
           }
         >
           <Smartphone className="h-4 w-4 shrink-0" />
-          <span>Mete sou Ekran iPhone</span>
+          <span>{t.addToIphoneBtn}</span>
         </button>
 
         {showIOSGuide && (
@@ -61,7 +63,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
               <button
                 type="button"
                 onClick={() => setShowIOSGuide(false)}
-                aria-label="Fèmen"
+                aria-label={t.modalCloseAria}
                 className="absolute top-3.5 right-3.5 flex h-9 w-9 items-center justify-center rounded-lg text-[#9CA3AF] hover:bg-[#363B44] hover:text-[#F3F4F6] cursor-pointer"
               >
                 <X className="h-4 w-4" />
@@ -78,26 +80,20 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
                     id="ios-install-heading"
                     className="font-display text-base font-bold text-[#F3F4F6]"
                   >
-                    Mete Wesley Music sou Ekran iPhone
+                    {t.iosGuideTitle}
                   </h3>
-                  <p className="text-xs text-[#10B981]">Ouvri san ba Safari (Full Screen)</p>
+                  <p className="text-xs text-[#10B981]">{t.iosGuideSubtitle}</p>
                 </div>
               </div>
 
               <ol className="space-y-2.5 text-sm text-[#D1D5DB] leading-relaxed">
                 <li className="flex items-start gap-2.5">
                   <Share className="h-4 w-4 text-[#10B981] shrink-0 mt-1" />
-                  <span>
-                    1. Peze bouton <strong className="text-[#F3F4F6]">Share</strong> anba nan mitan
-                    Safari a.
-                  </span>
+                  <span>{t.iosGuideStep1}</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <PlusSquare className="h-4 w-4 text-[#10B981] shrink-0 mt-1" />
-                  <span>
-                    2. Desann epi peze <strong className="text-[#F3F4F6]">Add to Home Screen</strong>{' '}
-                    (Ajoute sou ekran dakèy).
-                  </span>
+                  <span>{t.iosGuideStep2}</span>
                 </li>
               </ol>
 
@@ -106,7 +102,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
                 onClick={() => setShowIOSGuide(false)}
                 className="w-full min-h-[44px] rounded-xl bg-[#10B981] hover:bg-[#059669] text-[#0B1410] font-display font-bold text-sm transition-colors cursor-pointer"
               >
-                Oke, Mwen Konprann
+                {t.iosGuideConfirmBtn}
               </button>
             </div>
           </div>
