@@ -94,6 +94,66 @@ export function extractFolderNameFromFileList(files: File[]): string | null {
   return null;
 }
 
+export interface FolderAudioGroup {
+  folderName: string;
+  files: File[];
+}
+
+/**
+ * Groups selected or dropped audio files by subfolder name so selecting a parent
+ * folder containing multiple subfolders (e.g., KONPA_DIFE, RABODAY_2026, REGGAE_VOL_1)
+ * or dropping multiple folders at once creates separate sequential upload jobs.
+ */
+export function groupAudioFilesBySubfolder(rawFiles: File[]): FolderAudioGroup[] {
+  const audioFiles = rawFiles.filter(isAudioFile);
+  if (audioFiles.length === 0) return [];
+
+  const withSegments = audioFiles.map((file) => {
+    const rel =
+      (file as File & { relativePathOverride?: string }).relativePathOverride ||
+      file.webkitRelativePath ||
+      file.name;
+    const segments = rel.split('/').filter(Boolean);
+    return { file, segments };
+  });
+
+  const topDirs = new Set(
+    withSegments.filter((item) => item.segments.length >= 2).map((item) => item.segments[0])
+  );
+  const hasSubfoldersUnderSingleRoot =
+    topDirs.size === 1 && withSegments.some((item) => item.segments.length >= 3);
+
+  const grouped = new Map<string, File[]>();
+
+  for (const { file, segments } of withSegments) {
+    let folderName: string;
+    if (topDirs.size > 1 && segments.length >= 2) {
+      // Multiple root folders dropped at once -> group by root folder name
+      folderName = segments[0];
+    } else if (hasSubfoldersUnderSingleRoot) {
+      // Parent folder selected via webkitdirectory -> group by subfolder name (segments[1])
+      folderName = segments.length >= 3 ? segments[1] : segments[0];
+    } else if (segments.length >= 2) {
+      // Single folder selected
+      folderName = segments[0];
+    } else {
+      folderName = `Folder_VIP_${audioFiles.length}_Mizik`;
+    }
+
+    const cleanName = folderName.trim() || 'Nouvo_Folder_VIP';
+    const list = grouped.get(cleanName) || [];
+    list.push(file);
+    grouped.set(cleanName, list);
+  }
+
+  return Array.from(grouped.entries())
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+    .map(([folderName, files]) => ({
+      folderName,
+      files: sortAudioFilesSequentially(files),
+    }));
+}
+
 interface FileSystemEntryLike {
   isFile: boolean;
   isDirectory: boolean;

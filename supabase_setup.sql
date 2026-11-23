@@ -508,6 +508,49 @@ begin
 end;
 $$;
 
+-- 12B. FOLDERS TABLE FOR REAL AUDIO TRACK LISTS (name, tracks, track_count, is_active) ACROSS ALL DEVICES
+create table if not exists public.folders (
+  id text primary key default gen_random_uuid()::text,
+  name text not null default '',
+  tracks jsonb not null default '[]'::jsonb,
+  track_count integer not null default 0,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+alter table public.music_packs add column if not exists zip_url text;
+alter table public.folders add column if not exists name text;
+alter table public.folders add column if not exists is_active boolean not null default true;
+alter table public.folders add column if not exists tracks jsonb not null default '[]'::jsonb;
+alter table public.folders add column if not exists track_count integer not null default 0;
+
+create index if not exists idx_folders_created_at on public.folders (created_at desc);
+
+alter table public.folders enable row level security;
+
+drop policy if exists "Allow anon select folders" on public.folders;
+drop policy if exists "Allow anon insert folders" on public.folders;
+drop policy if exists "Allow anon update folders" on public.folders;
+drop policy if exists "Allow anon delete folders" on public.folders;
+
+create policy "Allow anon select folders" on public.folders for select to anon, authenticated using (true);
+create policy "Allow anon insert folders" on public.folders for insert to anon, authenticated with check (true);
+create policy "Allow anon update folders" on public.folders for update to anon, authenticated using (true) with check (true);
+create policy "Allow anon delete folders" on public.folders for delete to anon, authenticated using (true);
+
+alter table public.folders replica identity full;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'folders'
+  ) then
+    alter publication supabase_realtime add table public.folders;
+  end if;
+end;
+$$;
+
 -- 13. GRANT FULL API ACCESS TO ANON & AUTHENTICATED ON ALL PUBLIC TABLES
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on all tables in schema public to anon, authenticated;

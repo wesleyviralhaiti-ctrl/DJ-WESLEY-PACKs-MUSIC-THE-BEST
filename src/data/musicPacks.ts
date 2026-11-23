@@ -4,14 +4,19 @@ import { hasUploadedMp3Buffer } from '../utils/audioAnalyzer';
 
 export interface TrackItem {
   number: number;
+  name?: string;
   title: string;
   artist: string;
   bpm: number;
   duration: string;
   mixType: string;
+  url?: string;
   audioUrl?: string;
   fileUrl?: string;
+  zipUrl?: string;
+  isDirectZip?: boolean;
   storagePath?: string;
+  size?: number;
   fileSizeBytes?: number;
 }
 
@@ -27,23 +32,80 @@ export interface MusicPack {
   bitrate: string;
   bpmRange: string;
   coverImage: string;
+  zipUrl?: string;
   tracks: TrackItem[];
   isCustomUpload?: boolean;
   isComingSoon?: boolean;
 }
 
 /**
- * Returns true if a pack has real audio files attached
+ * Normalizes direct cloud links (Google Drive, Dropbox, MediaFire, Mega, Supabase)
+ * so buyers receive the cleanest possible 1-click download experience.
+ */
+export function normalizeDirectZipUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+
+    // Google Drive share URL -> direct download URL
+    if (host.includes('drive.google.com')) {
+      const fileMatch = parsed.pathname.match(/\/file\/d\/([^/]+)/i);
+      const idParam = fileMatch?.[1] || parsed.searchParams.get('id');
+      if (idParam) {
+        return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(idParam)}`;
+      }
+    }
+
+    // Dropbox share URL -> force ?dl=1 direct download
+    if (host.includes('dropbox.com')) {
+      parsed.searchParams.set('dl', '1');
+      return parsed.toString();
+    }
+
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
+ * Resolves the permanent public audio URL for a track (explicit url/audioUrl/fileUrl
+ * or derived from Supabase Storage 'music-packs' bucket storagePath).
+ */
+export function getResolvedTrackAudioUrl(track: TrackItem): string | null {
+  const direct = (track.url || track.audioUrl || track.fileUrl || '').trim();
+  if (direct) return direct;
+
+  if (track.storagePath && track.storagePath.trim()) {
+    const { data } = supabaseClient.storage
+      .from('music-packs')
+      .getPublicUrl(track.storagePath.trim());
+    if (data?.publicUrl) return data.publicUrl;
+  }
+
+  return null;
+}
+
+/**
+ * Returns true if a pack has a direct .ZIP download URL or real audio files attached
  * (either remote public Supabase URLs or in-memory ArrayBuffers).
- * Folders without real audio are strictly marked "An Preparasyon"
- * to block fake 0-second / 00:00 corrupt downloads.
  */
 export function packHasRealAudio(pack: MusicPack): boolean {
-  if (!pack || !Array.isArray(pack.tracks) || pack.tracks.length === 0) {
+  if (!pack) return false;
+  if (pack.zipUrl && pack.zipUrl.trim().length > 0) {
+    return true;
+  }
+  if (!Array.isArray(pack.tracks) || pack.tracks.length === 0) {
     return false;
   }
   return pack.tracks.some(
-    (t) => Boolean(t.audioUrl || t.fileUrl) || hasUploadedMp3Buffer(pack.id, t.number)
+    (t) =>
+      Boolean(t.zipUrl && t.zipUrl.trim()) ||
+      Boolean(getResolvedTrackAudioUrl(t)) ||
+      hasUploadedMp3Buffer(pack.id, t.number)
   );
 }
 
@@ -1819,74 +1881,301 @@ export function activateComingSoonPack(
 }
 
 // ============================================================================
-// SUPABASE REALTIME & REMOTE STORAGE PERSISTENCE FOR `music_packs` TABLE
+// SUPABASE REALTIME & REMOTE STORAGE PERSISTENCE FOR `folders` & `music_packs`
 // ============================================================================
+
+function mapSupabasePackRow(row: any): MusicPack {
+  const rawTracks: any[] = Array.isArray(row.tracks) ? row.tracks : [];
+  const normalizedTracks: TrackItem[] = rawTracks.map((t: any, idx: number) => {
+    const resolvedUrl = (t?.url || t?.audioUrl || t?.fileUrl || '').trim() || undefined;
+    const resolvedSize = Number(t?.size ?? t?.fileSizeBytes) || undefined;
+    return {
+      number: Number(t?.number) || idx + 1,
+      name: t?.name || undefined,
+      title: String(t?.title || `Track ${idx + 1}`),
+      artist: String(t?.artist || 'Wesley VIP'),
+      bpm: Number(t?.bpm) || 105,
+      duration: String(t?.duration || '3:30'),
+      mixType: String(t?.mixType || 'Original Audio'),
+      url: resolvedUrl,
+      audioUrl: resolvedUrl,
+      fileUrl: t?.fileUrl || resolvedUrl,
+      zipUrl: typeof t?.zipUrl === 'string' && t.zipUrl.trim() ? t.zipUrl.trim() : undefined,
+      isDirectZip: Boolean(t?.isDirectZip),
+      storagePath: t?.storagePath || undefined,
+      size: resolvedSize,
+      fileSizeBytes: resolvedSize,
+    };
+  });
+
+  const embeddedZipUrl =
+    (typeof row.zip_url === 'string' && row.zip_url.trim()) ||
+    normalizedTracks.find((t) => Boolean(t.zipUrl))?.zipUrl ||
+    (normalizedTracks.length === 1 && normalizedTracks[0]?.isDirectZip
+      ? normalizedTracks[0]?.url || normalizedTracks[0]?.audioUrl || normalizedTracks[0]?.fileUrl
+      : undefined) ||
+    undefined;
+
+  const displayTitle = String(row.name || row.title || 'Nouvo Folder VIP').trim();
+  const trackCount = Number(row.track_count) || normalizedTracks.length;
+  const totalTrackBytes = normalizedTracks.reduce(
+    (sum, t) => sum + (Number(t.size ?? t.fileSizeBytes) || 0),
+    0
+  );
+  const computedSizeLabel =
+    totalTrackBytes > 0
+      ? totalTrackBytes >= 1024 * 1024 * 1024
+        ? `${(totalTrackBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+        : `${Math.max(1, Math.round(totalTrackBytes / (1024 * 1024)))} MB`
+      : 'ZIP VIP';
+
+  const isComingSoon =
+    typeof row.is_active === 'boolean' ? !row.is_active : Boolean(row.is_coming_soon);
+
+  return {
+    id: String(row.id),
+    slug: String(row.slug || slugifyPackTitle(displayTitle)),
+    title: displayTitle,
+    filename: row.filename || undefined,
+    subtitle: String(
+      row.subtitle ||
+        (isComingSoon
+          ? '⏳ Folder an preparasyon — mizik yo ap disponib byento.'
+          : `${trackCount} mizik an lòd pare pou telechaje.`)
+    ),
+    genre: String(row.genre || 'Folder VIP .ZIP'),
+    trackCount,
+    fileSize: String(row.file_size || computedSizeLabel),
+    bitrate: String(row.bitrate || 'MP3 320kbps'),
+    bpmRange: String(row.bpm_range || 'Auto Scan'),
+    coverImage: String(
+      row.cover_image || '/src/assets/images/hero_studio_console_1795118961756.jpg'
+    ),
+    zipUrl: embeddedZipUrl,
+    tracks: normalizedTracks,
+    isCustomUpload: row.is_custom_upload !== false,
+    isComingSoon,
+  };
+}
+
+async function selectAllRowsSafe(tableName: 'folders' | 'music_packs'): Promise<any[]> {
+  try {
+    const ordered = await supabaseClient
+      .from(tableName)
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!ordered.error && Array.isArray(ordered.data)) {
+      return ordered.data;
+    }
+    const plain = await supabaseClient.from(tableName).select('*');
+    if (!plain.error && Array.isArray(plain.data)) {
+      return plain.data;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
 
 export async function fetchRemoteMusicPacks(): Promise<MusicPack[]> {
   try {
-    const { data, error } = await supabaseClient
-      .from('music_packs')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const [folderRows, packRows] = await Promise.all([
+      selectAllRowsSafe('folders'),
+      selectAllRowsSafe('music_packs'),
+    ]);
 
-    if (error || !data || !Array.isArray(data)) {
-      return loadCustomPacks();
+    const localPacks = loadCustomPacks();
+    const deletedSet = new Set(loadDeletedPackIds());
+    const byId = new Map<string, MusicPack>();
+    const seenNormalizedTitles = new Set<string>();
+
+    for (const row of folderRows) {
+      const mapped = mapSupabasePackRow(row);
+      if (deletedSet.has(mapped.id)) continue;
+      byId.set(mapped.id, mapped);
+      seenNormalizedTitles.add(mapped.title.trim().toLowerCase());
+    }
+    for (const row of packRows) {
+      const mapped = mapSupabasePackRow(row);
+      if (deletedSet.has(mapped.id) || byId.has(mapped.id)) continue;
+      byId.set(mapped.id, mapped);
+      seenNormalizedTitles.add(mapped.title.trim().toLowerCase());
     }
 
-    const mapped: MusicPack[] = data.map((row: any) => ({
-      id: String(row.id),
-      slug: String(row.slug),
-      title: String(row.title),
-      filename: row.filename || undefined,
-      subtitle: String(row.subtitle || ''),
-      genre: String(row.genre || 'Mizik VIP'),
-      trackCount: Number(row.track_count) || 0,
-      fileSize: String(row.file_size || '300 MB'),
-      bitrate: String(row.bitrate || 'MP3 320kbps'),
-      bpmRange: String(row.bpm_range || 'Auto Scan'),
-      coverImage: String(row.cover_image || '/src/assets/images/hero_studio_console_1795118961756.jpg'),
-      tracks: Array.isArray(row.tracks) ? row.tracks : [],
-      isCustomUpload: Boolean(row.is_custom_upload),
-      isComingSoon: Boolean(row.is_coming_soon),
-    }));
+    // Preserve any localStorage fallback packs not yet in Supabase
+    for (const localPack of localPacks) {
+      if (deletedSet.has(localPack.id)) continue;
+      const normTitle = localPack.title.trim().toLowerCase();
+      if (!byId.has(localPack.id) && !seenNormalizedTitles.has(normTitle)) {
+        byId.set(localPack.id, localPack);
+        seenNormalizedTitles.add(normTitle);
+      }
+    }
 
-    saveCustomPacks(mapped);
-    return mapped;
+    const merged = Array.from(byId.values());
+    if (merged.length > 0) {
+      saveCustomPacks(merged);
+      return merged;
+    }
+
+    return localPacks;
   } catch {
     return loadCustomPacks();
   }
 }
 
-export async function upsertRemoteMusicPack(pack: MusicPack): Promise<void> {
-  upsertCustomPack(pack);
-  try {
-    await supabaseClient.from('music_packs').upsert({
-      id: pack.id,
-      slug: pack.slug,
-      title: pack.title,
-      filename: pack.filename || formatZipFolderFilename(pack),
-      subtitle: pack.subtitle,
-      genre: pack.genre,
-      track_count: pack.trackCount,
-      file_size: pack.fileSize,
-      bitrate: pack.bitrate,
-      bpm_range: pack.bpmRange,
-      cover_image: pack.coverImage,
-      tracks: pack.tracks,
-      is_custom_upload: true,
-      is_coming_soon: Boolean(pack.isComingSoon),
-      updated_at: Date.now(),
-    });
-  } catch {
-    // Ignore network errors cleanly
+export async function upsertRemoteMusicPack(pack: MusicPack): Promise<{
+  success: boolean;
+  savedToFoldersTable: boolean;
+  savedToMusicPacksTable: boolean;
+  usedLocalFallback?: boolean;
+  persistedPack?: MusicPack;
+  error?: string;
+}> {
+  const cleanZipUrl = pack.zipUrl?.trim() || undefined;
+  let packToPersist: MusicPack = cleanZipUrl ? { ...pack, zipUrl: cleanZipUrl } : { ...pack };
+
+  // Always save to localStorage immediately as instant primary + fallback store
+  upsertCustomPack(packToPersist);
+
+  let normalizedTracks = packToPersist.tracks.map((t, index) => {
+    const resolvedUrl = getResolvedTrackAudioUrl(t) || undefined;
+    const resolvedSize = t.size ?? t.fileSizeBytes;
+    return {
+      ...t,
+      url: resolvedUrl,
+      audioUrl: resolvedUrl,
+      size: resolvedSize,
+      fileSizeBytes: resolvedSize,
+      ...(index === 0 && cleanZipUrl ? { zipUrl: cleanZipUrl } : {}),
+    };
+  });
+
+  if (cleanZipUrl && normalizedTracks.length === 0) {
+    normalizedTracks = [
+      {
+        number: 1,
+        name: formatZipFolderFilename(packToPersist),
+        title: packToPersist.title,
+        artist: 'Wesley VIP',
+        bpm: 105,
+        duration: 'ZIP Dirèk',
+        mixType: 'Direct ZIP Archive',
+        url: cleanZipUrl,
+        audioUrl: cleanZipUrl,
+        fileUrl: cleanZipUrl,
+        zipUrl: cleanZipUrl,
+        isDirectZip: true,
+        size: undefined,
+        fileSizeBytes: undefined,
+      },
+    ];
   }
+
+  // Strictly send ONLY core columns that exist in `folders`: name, tracks, track_count, is_active
+  const coreFolderPayload = {
+    name: packToPersist.title,
+    tracks: normalizedTracks,
+    track_count: packToPersist.trackCount,
+    is_active: !packToPersist.isComingSoon,
+  };
+
+  let savedToFoldersTable = false;
+  let foldersErrorMsg: string | undefined;
+
+  try {
+    // 1. Try updating an existing folder row by ID first (e.g., Append MP3s / Activate Coming Soon)
+    let updatedExisting = false;
+    try {
+      const updateRes = await supabaseClient
+        .from('folders')
+        .update(coreFolderPayload)
+        .eq('id', packToPersist.id)
+        .select('id');
+
+      if (!updateRes.error && Array.isArray(updateRes.data) && updateRes.data.length > 0) {
+        updatedExisting = true;
+        savedToFoldersTable = true;
+      }
+    } catch {
+      // Ignore update miss/UUID mismatch and proceed to .insert()
+    }
+
+    // 2. Otherwise insert new row using ONLY core columns (name, tracks, track_count, is_active)
+    if (!updatedExisting) {
+      let insertRes = await supabaseClient
+        .from('folders')
+        .insert(coreFolderPayload)
+        .select('id')
+        .maybeSingle();
+
+      // If `folders.id` has no DB default, retry once including `id` with only the core columns
+      if (
+        insertRes.error &&
+        insertRes.error.message &&
+        insertRes.error.message.toLowerCase().includes('null value in column "id"')
+      ) {
+        insertRes = await supabaseClient
+          .from('folders')
+          .insert({ id: packToPersist.id, ...coreFolderPayload })
+          .select('id')
+          .maybeSingle();
+      }
+
+      if (!insertRes.error) {
+        savedToFoldersTable = true;
+        const generatedId = insertRes.data?.id ? String(insertRes.data.id) : null;
+        if (generatedId && generatedId !== packToPersist.id) {
+          const oldId = packToPersist.id;
+          packToPersist = { ...packToPersist, id: generatedId };
+          const currentCustom = loadCustomPacks().filter((p) => p.id !== oldId && p.id !== generatedId);
+          saveCustomPacks([packToPersist, ...currentCustom]);
+        }
+      } else {
+        foldersErrorMsg = insertRes.error.message;
+      }
+    }
+  } catch (err: any) {
+    foldersErrorMsg = err?.message || 'Supabase folders insert fallback';
+  }
+
+  // Always succeed cleanly because localStorage fallback is already guaranteed
+  return {
+    success: true,
+    savedToFoldersTable,
+    savedToMusicPacksTable: false,
+    usedLocalFallback: !savedToFoldersTable,
+    persistedPack: packToPersist,
+    error: foldersErrorMsg,
+  };
 }
 
 export async function deleteRemoteMusicPack(packId: string): Promise<void> {
   deletePackById(packId);
   try {
-    await supabaseClient.from('music_packs').delete().eq('id', packId);
+    await supabaseClient.from('folders').delete().eq('id', packId);
   } catch {
-    // Ignore network errors cleanly
+    // Ignore network or UUID syntax errors cleanly
   }
+}
+
+export function subscribeMusicPacksRealtime(onChange: () => void): () => void {
+  const suffix = Math.random().toString(36).slice(2, 8);
+  const channel = supabaseClient
+    .channel(`folders_packs_realtime_${suffix}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'folders' },
+      () => onChange()
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'music_packs' },
+      () => onChange()
+    )
+    .subscribe();
+
+  return () => {
+    void supabaseClient.removeChannel(channel);
+  };
 }

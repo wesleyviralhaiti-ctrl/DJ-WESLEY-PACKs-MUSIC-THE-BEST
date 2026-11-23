@@ -21,10 +21,12 @@ import {
   VipKeyRecord,
   consumeFolderCreditRemote,
   deleteRemoteMusicPack,
+  fetchRemoteMusicPacks,
   fetchVipKeyByCodeRemote,
   formatZipFolderFilename,
   getAllMusicPacks,
   getVipKeyByCode,
+  subscribeMusicPacksRealtime,
   subscribeSingleVipKeyRealtime,
 } from './data/musicPacks';
 import { buildCleanMp3Zip } from './utils/id3Mp3Packager';
@@ -112,7 +114,6 @@ export default function App() {
   const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
   const [exhaustedKeyCode, setExhaustedKeyCode] = useState<string | null>(null);
   const [isExhaustedOpen, setIsExhaustedOpen] = useState<boolean>(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [colorVersion, setColorVersion] = useState<number>(0);
   const [customPacksVersion, setCustomPacksVersion] = useState<number>(0);
   const [packagingPackId, setPackagingPackId] = useState<string | null>(null);
@@ -191,6 +192,27 @@ export default function App() {
     setIsDirectCheckoutOpen(true);
   }, []);
 
+  // Fetch remote folders & track URLs from Supabase across all devices and listen for live updates
+  useEffect(() => {
+    let active = true;
+    const syncRemoteCatalog = async () => {
+      await fetchRemoteMusicPacks();
+      if (active) {
+        setCustomPacksVersion((v) => v + 1);
+      }
+    };
+
+    void syncRemoteCatalog();
+    const unsubscribePacks = subscribeMusicPacksRealtime(() => {
+      void syncRemoteCatalog();
+    });
+
+    return () => {
+      active = false;
+      unsubscribePacks();
+    };
+  }, []);
+
   const allPacks = useMemo(() => {
     void customPacksVersion;
     return getAllMusicPacks();
@@ -221,11 +243,18 @@ export default function App() {
   const activePacksCount = availablePacks.length;
   const comingSoonPacksCount = trendingComingSoonPacks.length;
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
+  const [toastState, setToastState] = useState<{
+    message: string;
+    variant: 'success' | 'error';
+  } | null>(null);
+
+  const showToast = useCallback((msg: string, variant?: 'success' | 'error') => {
+    const inferredVariant: 'success' | 'error' =
+      variant ?? (msg.startsWith('❌') || msg.startsWith('⚠️') ? 'error' : 'success');
+    setToastState({ message: msg, variant: inferredVariant });
     window.setTimeout(() => {
-      setToastMessage((curr) => (curr === msg ? null : curr));
-    }, 4500);
+      setToastState((curr) => (curr?.message === msg ? null : curr));
+    }, 5500);
   }, []);
 
   const handleRequestComingSoonPack = useCallback(
@@ -388,67 +417,146 @@ export default function App() {
   };
 
   const [downloadProgress, setDownloadProgress] = useState<{
-    status: 'preparing' | 'zipping' | 'completed';
+    status: 'preparing' | 'zipping' | 'completed' | 'error';
     percent: number;
     current: number;
     total: number;
     trackName: string;
     zipBlob?: Blob;
+    zipUrl?: string;
     zipFilename?: string;
+    errorMessage?: string;
   } | null>(null);
 
-  const triggerZipDownload = useCallback(async (pack: MusicPack): Promise<{ success: boolean; blob?: Blob; filename?: string }> => {
-    const filename = formatZipFolderFilename(pack);
-    setPackagingPackId(pack.id);
-    setDownloadProgress({
-      status: 'preparing',
-      percent: 0,
-      current: 0,
-      total: pack.tracks?.length || 1,
-      trackName: `N ap prepare ${filename}...`,
-    });
+  const forceBrowserDirectZipUrlSave = useCallback(
+    (rawZipUrl: string, rawFilename: string) => {
+      const cleanZipFilename = `${rawFilename.replace(/\.zip$/i, '')}.zip`;
+      const trimmedUrl = rawZipUrl.trim();
+      const downloadUrl =
+        (trimmedUrl.includes('supabase.co/storage') ||
+          trimmedUrl.includes('/storage/v1/object/public/')) &&
+        !/[?&]download=/i.test(trimmedUrl)
+          ? `${trimmedUrl}${trimmedUrl.includes('?') ? '&' : '?'}download=${encodeURIComponent(
+              cleanZipFilename
+            )}`
+          : trimmedUrl;
 
-    try {
-      const zipBlob = await buildCleanMp3Zip(pack, (current, total, trackName) => {
-        const percent = total === 100 ? current : Math.round((current / total) * 100);
-        setDownloadProgress({
-          status: 'zipping',
-          percent: Math.min(100, Math.max(0, percent)),
-          current: total === 100 ? Math.round((current / 100) * (pack.tracks?.length || 1)) : current,
-          total: pack.tracks?.length || total,
-          trackName,
-        });
-      });
-
-      setDownloadProgress({
-        status: 'completed',
-        percent: 100,
-        current: pack.tracks?.length || 1,
-        total: pack.tracks?.length || 1,
-        trackName: `✅ TELECHAJE KONPLÈ! Fichye .ZIP la anrejistre nan Downloads ou.`,
-        zipBlob,
-        zipFilename: filename,
-      });
-
-      const url = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
+      a.href = downloadUrl;
+      a.download = cleanZipFilename;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
 
-      showToast(`✅ Folder "${pack.title}" telechaje avèk siksè nan Downloads ou!`);
-      return { success: true, blob: zipBlob, filename };
-    } catch (err: any) {
-      setDownloadProgress(null);
-      showToast(`❌ Erè telechajman: ${err?.message || 'Echèk jenere .ZIP'}`);
-      return { success: false };
-    } finally {
-      setPackagingPackId(null);
-    }
-  }, [showToast]);
+      showToast('✅ Telechajman Lanse! Gade nan dosye Downloads ou.', 'success');
+      return downloadUrl;
+    },
+    [showToast]
+  );
+
+  const forceBrowserZipSave = useCallback(
+    (zipBlob: Blob, rawFilename: string) => {
+      const cleanZipFilename = `${rawFilename.replace(/\.zip$/i, '')}.zip`;
+      const blobUrl = window.URL.createObjectURL(zipBlob);
+      const link = document.createElement('a');
+      link.style.display = 'none';
+      link.href = blobUrl;
+      link.download = cleanZipFilename;
+      document.body.appendChild(link);
+      link.click();
+      showToast('✅ Telechajman Lanse! Gade nan dosye Downloads ou.', 'success');
+      window.setTimeout(() => {
+        if (link.parentNode) {
+          document.body.removeChild(link);
+        }
+        window.URL.revokeObjectURL(blobUrl);
+      }, 5000);
+    },
+    [showToast]
+  );
+
+  const triggerZipDownload = useCallback(
+    async (pack: MusicPack): Promise<{ success: boolean; blob?: Blob; filename?: string }> => {
+      const filename = formatZipFolderFilename(pack);
+      const cleanZipFilename = `${filename.replace(/\.zip$/i, '')}.zip`;
+
+      const directZipUrl =
+        pack.zipUrl?.trim() ||
+        pack.tracks?.find((t) => Boolean(t.zipUrl && t.zipUrl.trim()))?.zipUrl?.trim() ||
+        '';
+
+      // INSTANT 1-CLICK .ZIP DOWNLOAD when folder.zipUrl exists (100% original audio, zero 00:00)
+      if (
+        directZipUrl &&
+        (directZipUrl.startsWith('https://') || directZipUrl.startsWith('http://'))
+      ) {
+        const finalHref = forceBrowserDirectZipUrlSave(directZipUrl, cleanZipFilename);
+        setDownloadProgress({
+          status: 'completed',
+          percent: 100,
+          current: pack.trackCount || 1,
+          total: pack.trackCount || 1,
+          trackName: `${cleanZipFilename} (${pack.fileSize || 'ZIP Dirèk'})`,
+          zipUrl: finalHref,
+          zipFilename: cleanZipFilename,
+        });
+        return { success: true, filename: cleanZipFilename };
+      }
+
+      setPackagingPackId(pack.id);
+      setDownloadProgress({
+        status: 'preparing',
+        percent: 0,
+        current: 0,
+        total: pack.tracks?.length || 1,
+        trackName: cleanZipFilename,
+      });
+
+      try {
+        const zipBlob = await buildCleanMp3Zip(pack, (progress) => {
+          setDownloadProgress({
+            status: progress.phase === 'zipping' ? 'zipping' : 'preparing',
+            percent: Math.min(99, Math.max(0, progress.percent)),
+            current: progress.current,
+            total: progress.total,
+            trackName: progress.trackName,
+          });
+        });
+
+        setDownloadProgress({
+          status: 'completed',
+          percent: 100,
+          current: pack.tracks?.length || 1,
+          total: pack.tracks?.length || 1,
+          trackName: `${cleanZipFilename} (${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB)`,
+          zipBlob,
+          zipFilename: cleanZipFilename,
+        });
+
+        forceBrowserZipSave(zipBlob, cleanZipFilename);
+        return { success: true, blob: zipBlob, filename: cleanZipFilename };
+      } catch (err: any) {
+        const errMsg =
+          err?.message ||
+          '⚠️ Folder sa a poko gen fichye MP3 sou Supabase Storage — efase l nan Admin VIP epi re-upload mizik yo!';
+        setDownloadProgress({
+          status: 'error',
+          percent: 0,
+          current: 0,
+          total: pack.tracks?.length || 0,
+          trackName: cleanZipFilename,
+          errorMessage: errMsg,
+        });
+        showToast(errMsg, 'error');
+        return { success: false };
+      } finally {
+        setPackagingPackId(null);
+      }
+    },
+    [forceBrowserDirectZipUrlSave, forceBrowserZipSave, showToast]
+  );
 
   const handleAdminAuthenticated = useCallback(() => {
     try {
@@ -478,9 +586,8 @@ export default function App() {
     async (pack: MusicPack) => {
       if (!isAdminAuthenticated || pack.isComingSoon) return;
       await triggerZipDownload(pack);
-      showToast(`⚡ Telechaje Gratis Admin: ${formatZipFolderFilename(pack)}`);
     },
-    [isAdminAuthenticated, showToast, triggerZipDownload]
+    [isAdminAuthenticated, triggerZipDownload]
   );
 
   const handleUnlockOrDownloadPack = useCallback(
@@ -509,7 +616,6 @@ export default function App() {
         }
         const bonusRes = await consumeVisitorBonusCreditRemote(visitorProfile);
         setVisitorProfile(bonusRes.visitor);
-        showToast(`🎁 1 Kredi Folder Gratis itilize! Pake "${pack.title}" telechaje!`);
         return;
       }
 
@@ -531,7 +637,7 @@ export default function App() {
         return;
       }
 
-      // 2. Only deduct 1 VIP folder credit AFTER the .ZIP blob is successfully generated and a.click() fires!
+      // 2. Only deduct 1 VIP folder credit AFTER the .ZIP blob is successfully generated and link.click() fires!
       const result = await consumeFolderCreditRemote(activeKey.code, pack.id);
       if (!result.allowed || !result.updatedRecord) {
         window.localStorage.removeItem(ACTIVE_KEY_STORAGE_KEY);
@@ -551,12 +657,6 @@ export default function App() {
         setIsWelcomeOpen(false);
         setExhaustedKeyCode(result.updatedRecord.code);
         setIsExhaustedOpen(true);
-      } else {
-        showToast(
-          updatedIsUnlimited
-            ? 'Telechajman .ZIP lanse! Aksè VIP Ilimite aktif.'
-            : `Telechajman .ZIP lanse! Kredi ki rete: ${result.updatedRecord.remainingFolders} / ${result.updatedRecord.totalFolders} Folder`
-        );
       }
     },
     [
@@ -566,7 +666,6 @@ export default function App() {
       handleExhaustedAttempt,
       isAdminAuthenticated,
       isAdminFreeMode,
-      showToast,
       triggerZipDownload,
     ]
   );
@@ -1229,70 +1328,123 @@ export default function App() {
         onCheckoutConfigChanged={() => {}}
       />
 
-      {/* Floating Download Progress Panel */}
+      {/* Floating Download Progress Overlay */}
       {downloadProgress && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-full max-w-lg px-4 animate-in fade-in slide-in-from-bottom-6 duration-300">
-          <div className="rounded-2xl bg-[#262A30]/95 border border-[#10B981]/50 p-5 shadow-[0_10px_40px_rgba(0,0,0,0.6)] backdrop-blur-xl">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-3 w-3 relative">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-[#10B981]"></span>
-                </span>
-                <span className="font-display font-bold text-sm text-[#F3F4F6] tracking-tight">
-                  {downloadProgress.status === 'completed'
-                    ? '✅ TELECHAJE KONPLÈ!'
-                    : '📥 TELECHAJMAN AN KOU...'}
-                </span>
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] w-full max-w-lg px-4 animate-in fade-in slide-in-from-bottom-6 duration-300">
+          {downloadProgress.status === 'error' ? (
+            <div
+              role="alert"
+              className="rounded-2xl bg-rose-950/95 border-2 border-rose-500/80 p-5 shadow-[0_12px_45px_rgba(0,0,0,0.75)] backdrop-blur-xl space-y-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs sm:text-sm font-extrabold text-rose-100 leading-relaxed">
+                  {downloadProgress.errorMessage}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setDownloadProgress(null)}
+                  aria-label="Fèmen alèt la"
+                  className="rounded-md px-2 py-0.5 text-xs font-bold text-rose-200 hover:bg-rose-500/30 cursor-pointer shrink-0"
+                >
+                  ✕
+                </button>
               </div>
-              <span className="font-mono text-xs font-bold text-[#10B981] tabular-nums">
-                {downloadProgress.percent}%
-              </span>
             </div>
+          ) : (
+            <div className="rounded-2xl bg-[#262A30]/95 border border-[#10B981]/50 p-5 shadow-[0_10px_40px_rgba(0,0,0,0.65)] backdrop-blur-xl">
+              <div className="flex items-center justify-between mb-2.5 gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="flex h-3 w-3 relative shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-[#10B981]"></span>
+                  </span>
+                  <span className="font-display font-bold text-xs sm:text-sm text-[#F3F4F6] tracking-tight truncate">
+                    {downloadProgress.status === 'completed'
+                      ? '✅ Telechajman Lanse! Gade nan dosye Downloads ou.'
+                      : `📥 Ap prepare .ZIP la... ${downloadProgress.current} / ${downloadProgress.total} (${downloadProgress.percent}%)`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-mono text-xs font-bold text-[#10B981] tabular-nums">
+                    {downloadProgress.percent}%
+                  </span>
+                  {downloadProgress.status === 'completed' && (
+                    <button
+                      type="button"
+                      onClick={() => setDownloadProgress(null)}
+                      aria-label="Fèmen bwat telechajman an"
+                      className="ml-1 rounded-md px-1.5 py-0.5 text-xs font-bold text-[#9CA3AF] hover:bg-[#363B44] hover:text-[#F3F4F6] cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
 
-            <p className="font-mono text-xs text-[#D1D5DB] truncate mb-3">
-              {downloadProgress.trackName}
-            </p>
+              <p className="font-mono text-xs text-[#D1D5DB] truncate mb-3">
+                {downloadProgress.trackName}
+              </p>
 
-            {/* Animated Progress Bar */}
-            <div className="w-full h-3 bg-[#1C1F24] rounded-full overflow-hidden p-0.5 border border-[#363B44] mb-3">
-              <div
-                className="h-full bg-gradient-to-r from-[#059669] to-[#10B981] rounded-full transition-all duration-300 shadow-[0_0_12px_rgba(16,185,129,0.5)]"
-                style={{ width: `${Math.max(5, downloadProgress.percent)}%` }}
-              />
+              {/* Animated Progress Bar */}
+              <div className="w-full h-3 bg-[#1C1F24] rounded-full overflow-hidden p-0.5 border border-[#363B44] mb-3">
+                <div
+                  className="h-full bg-gradient-to-r from-[#059669] to-[#10B981] rounded-full transition-all duration-300 shadow-[0_0_12px_rgba(16,185,129,0.5)]"
+                  style={{ width: `${Math.max(4, downloadProgress.percent)}%` }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-xs text-[#9CA3AF]">
+                <span>
+                  {downloadProgress.status === 'completed'
+                    ? 'Fichye .ZIP la anrejistre nan dosye Downloads ou.'
+                    : `📥 Ap prepare .ZIP la... ${downloadProgress.current} / ${downloadProgress.total} (${downloadProgress.percent}%)`}
+                </span>
+                {downloadProgress.status === 'completed' &&
+                  downloadProgress.zipFilename &&
+                  (downloadProgress.zipBlob || downloadProgress.zipUrl) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (downloadProgress.zipBlob) {
+                          forceBrowserZipSave(
+                            downloadProgress.zipBlob,
+                            downloadProgress.zipFilename!
+                          );
+                        } else if (downloadProgress.zipUrl) {
+                          forceBrowserDirectZipUrlSave(
+                            downloadProgress.zipUrl,
+                            downloadProgress.zipFilename!
+                          );
+                        }
+                      }}
+                      className="font-bold text-emerald-300 hover:text-emerald-200 underline underline-offset-2 cursor-pointer shrink-0"
+                    >
+                      ⬇️ Klike Isit Si L Pa Kòmanse
+                    </button>
+                  )}
+              </div>
             </div>
-
-            <div className="flex items-center justify-between text-xs text-[#9CA3AF]">
-              <span>
-                {downloadProgress.status === 'completed'
-                  ? 'Fichye .ZIP la anrejistre nan Downloads ou.'
-                  : `Mizik ${downloadProgress.current} / ${downloadProgress.total} ap prepare...`}
-              </span>
-              {downloadProgress.status === 'completed' &&
-                downloadProgress.zipBlob &&
-                downloadProgress.zipFilename && (
-                  <a
-                    href={URL.createObjectURL(downloadProgress.zipBlob)}
-                    download={downloadProgress.zipFilename}
-                    className="font-bold text-emerald-300 hover:text-emerald-200 underline underline-offset-2 cursor-pointer"
-                  >
-                    ⬇️ Klike Isit Si L Pa Kòmanse
-                  </a>
-                )}
-            </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* Non-intrusive Feedback Toast */}
-      {toastMessage && (
+      {toastState && (
         <div
-          role="status"
+          role={toastState.variant === 'error' ? 'alert' : 'status'}
           aria-live="polite"
-          className="fixed bottom-5 right-5 z-50 flex items-center gap-2.5 rounded-xl bg-[#262A30] border border-[#10B981]/45 px-4 py-3 text-sm font-medium text-emerald-200 shadow-xl max-w-sm"
+          className={`fixed bottom-5 right-5 z-[60] flex items-center gap-2.5 rounded-xl px-4 py-3 text-sm font-semibold shadow-xl max-w-sm ${
+            toastState.variant === 'error'
+              ? 'bg-rose-950/95 border border-rose-500/70 text-rose-100'
+              : 'bg-[#262A30] border border-[#10B981]/60 text-emerald-200'
+          }`}
         >
-          <FolderCheck className="h-4 w-4 text-[#10B981] shrink-0" />
-          <span>{toastMessage}</span>
+          <FolderCheck
+            className={`h-4 w-4 shrink-0 ${
+              toastState.variant === 'error' ? 'text-rose-400' : 'text-[#10B981]'
+            }`}
+          />
+          <span>{toastState.message}</span>
         </div>
       )}
     </div>

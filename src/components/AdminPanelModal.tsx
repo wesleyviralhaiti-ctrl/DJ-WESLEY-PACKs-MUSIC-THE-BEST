@@ -28,6 +28,10 @@ import {
   ExternalLink,
   Users,
   Bell,
+  Link2,
+  FileArchive,
+  Zap,
+  Music,
 } from 'lucide-react';
 import {
   COMING_SOON_GENRE_PRESETS,
@@ -53,6 +57,7 @@ import {
   hideBuiltInDemoPacks,
   loadAllVipKeys,
   loadDeletedPackIds,
+  normalizeDirectZipUrl,
   renameCustomPack,
   restoreDemoPacks,
   slugifyPackTitle,
@@ -106,6 +111,7 @@ import {
   summarizeTopRequestedPacks,
 } from '../data/packRequests';
 import {
+  FolderAudioGroup,
   analyzeAudioFile,
   clearUploadedMp3sForPack,
   countUploadedMp3sForPack,
@@ -113,6 +119,7 @@ import {
   extractFolderNameFromFileList,
   getUploadedAudioExt,
   getUploadedMp3Buffer,
+  groupAudioFilesBySubfolder,
   hasUploadedMp3Buffer,
   isAudioFile,
   sortAudioFilesSequentially,
@@ -147,6 +154,21 @@ const PRIVATE_PAYMENT_PLANS = [
   { id: 'unlimited-vip', label: '👑 KLE VIP ILIMITE', folders: 999, isUnlimited: true },
 ] as const;
 
+type FolderQueueStatus = 'waiting' | 'uploading' | 'done' | 'error';
+
+interface FolderQueueItem {
+  queueId: string;
+  folderName: string;
+  files: File[];
+  totalCount: number;
+  completedCount: number;
+  percent: number;
+  status: FolderQueueStatus;
+  errorMessage?: string;
+  savedPackId?: string;
+  fileSizeLabel?: string;
+}
+
 export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   isOpen,
   isAuthenticated,
@@ -176,18 +198,53 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [comingSoonError, setComingSoonError] = useState<string | null>(null);
   const [comingSoonSuccess, setComingSoonSuccess] = useState<string | null>(null);
 
+  // Top Uploader Mode: Option A (1 .ZIP File), Option B (Direct Cloud Link), Option C (Parallel .MP3s)
+  const [uploadMode, setUploadMode] = useState<'zip_file' | 'cloud_link' | 'mp3_batch'>('zip_file');
+
+  // Option A: Single Pre-Zipped .ZIP Upload State
+  const [selectedZipFile, setSelectedZipFile] = useState<File | null>(null);
+  const [zipDisplayName, setZipDisplayName] = useState<string>('');
+  const [zipTrackCountInput, setZipTrackCountInput] = useState<string>('100');
+  const [zipGenreInput, setZipGenreInput] = useState<string>('Folder VIP .ZIP');
+  const zipFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Option B: Direct Cloud Link (.ZIP URL) State
+  const [cloudZipUrlInput, setCloudZipUrlInput] = useState<string>('');
+  const [cloudZipNameInput, setCloudZipNameInput] = useState<string>('');
+  const [cloudZipTrackCountInput, setCloudZipTrackCountInput] = useState<string>('100');
+  const [cloudZipSizeInput, setCloudZipSizeInput] = useState<string>('500 MB');
+  const [cloudZipGenreInput, setCloudZipGenreInput] = useState<string>('Folder VIP .ZIP');
+
+  // Option C: Multi-MP3 / Whole Folder State
+  const [mp3CustomFolderName, setMp3CustomFolderName] = useState<string>('');
+  const multiMp3InputRef = useRef<HTMLInputElement | null>(null);
+
   const [isDraggingFolder, setIsDraggingFolder] = useState(false);
   const [isProcessingFolder, setIsProcessingFolder] = useState(false);
   const [folderProgressText, setFolderProgressText] = useState<string | null>(null);
+  const [folderUploadProgress, setFolderUploadProgress] = useState<{
+    current: number;
+    total: number;
+    percent: number;
+    statusText: string;
+  } | null>(null);
   const [folderUploadError, setFolderUploadError] = useState<string | null>(null);
   const [importedPackId, setImportedPackId] = useState<string | null>(null);
   const [importedPackNameInput, setImportedPackNameInput] = useState<string>('');
   const [activatingPackId, setActivatingPackId] = useState<string | null>(null);
+  const [appendingPackId, setAppendingPackId] = useState<string | null>(null);
   const [exportedFoldersResult, setExportedFoldersResult] = useState<ExportFoldersResult | null>(null);
   const [exportIncludeBuiltIn, setExportIncludeBuiltIn] = useState<boolean>(false);
   const [exportCopiedBanner, setExportCopiedBanner] = useState<boolean>(false);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const multiFolderInputRef = useRef<HTMLInputElement | null>(null);
   const activatePackInputRef = useRef<HTMLInputElement | null>(null);
+  const appendMp3InputRef = useRef<HTMLInputElement | null>(null);
+
+  // Automatic Sequential Multi-Folder Queue State
+  const [folderQueue, setFolderQueue] = useState<FolderQueueItem[]>([]);
+  const folderQueueRef = useRef<FolderQueueItem[]>([]);
+  const isQueueRunningRef = useRef<boolean>(false);
 
   // VIP Keys state
   const [selectedQuota, setSelectedQuota] = useState<number>(21);
@@ -735,6 +792,131 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     window.setTimeout(() => setOrderActionBanner(null), 5000);
   };
 
+  const uploadAudioFilesToSupabaseFolder = async (
+    packId: string,
+    packSlug: string,
+    audioFiles: File[],
+    startTrackNumber: number = 1,
+    onProgress?: (
+      completed: number,
+      total: number,
+      percent: number,
+      currentFileName: string
+    ) => void
+  ): Promise<{ tracks: TrackItem[]; totalBytes: number }> => {
+    const totalCount = audioFiles.length;
+    const orderedTracks: TrackItem[] = new Array(totalCount);
+    let totalBytes = 0;
+
+    for (let i = 0; i < totalCount; i++) {
+      const file = audioFiles[i];
+      if (file.size <= 1000) {
+        throw new Error(
+          `Fichye "${file.name}" (${i + 1}/${totalCount}) vid oswa twò piti (${file.size} bytes). Chwazi yon vrè fichye MP3.`
+        );
+      }
+      totalBytes += file.size;
+    }
+
+    const BATCH_SIZE = 10;
+    let completedCount = 0;
+
+    const initialMsg = `⚡ Ap voye mizik 0 / ${totalCount} (0%)...`;
+    setFolderProgressText(initialMsg);
+    setFolderUploadProgress({
+      current: 0,
+      total: totalCount,
+      percent: 0,
+      statusText: initialMsg,
+    });
+    onProgress?.(0, totalCount, 0, '');
+
+    for (let batchStart = 0; batchStart < totalCount; batchStart += BATCH_SIZE) {
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, totalCount);
+      const batchTasks: Promise<void>[] = [];
+
+      for (let i = batchStart; i < batchEnd; i++) {
+        const file = audioFiles[i];
+        const trackIndex = i;
+        const trackNum = startTrackNumber + i;
+        const numStr = String(trackNum).padStart(3, '0');
+
+        batchTasks.push(
+          (async () => {
+            const { metadata, rawBuffer, fileExt } = await analyzeAudioFile(file);
+            storeUploadedMp3Buffer(packId, trackNum, rawBuffer, fileExt);
+
+            const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const storagePath = `${packSlug}/${numStr}_${sanitizedName}`;
+            const contentType =
+              file.name.toLowerCase().endsWith('.mp3') || !file.type ? 'audio/mpeg' : file.type;
+
+            const { error: uploadError } = await supabase.storage
+              .from('music-packs')
+              .upload(storagePath, file, {
+                contentType,
+                upsert: true,
+              });
+
+            if (uploadError) {
+              throw new Error(
+                `Echèk upload "${file.name}" (${trackNum}/${totalCount}) sou Supabase Storage (${uploadError.message}). Verifye bucket "music-packs" nan Supabase.`
+              );
+            }
+
+            const { data: publicUrlData } = supabase.storage
+              .from('music-packs')
+              .getPublicUrl(storagePath);
+
+            const publicUrl = publicUrlData?.publicUrl?.trim();
+            if (!publicUrl) {
+              throw new Error(`Pa kapab jwenn publicUrl pou "${file.name}" sou Supabase Storage.`);
+            }
+
+            const cleanArtist =
+              metadata.artistGuess.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() || 'Wesley VIP';
+            const cleanTitle =
+              metadata.titleGuess.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() ||
+              `Track ${trackNum}`;
+            const cleanTrackFilename = `${numStr} - ${cleanArtist} - ${cleanTitle}.${fileExt || 'mp3'}`;
+
+            orderedTracks[trackIndex] = {
+              number: trackNum,
+              name: cleanTrackFilename,
+              title: metadata.titleGuess,
+              artist: metadata.artistGuess,
+              bpm: 105,
+              duration: metadata.durationFormatted,
+              mixType: 'Original Audio',
+              url: publicUrl,
+              audioUrl: publicUrl,
+              fileUrl: publicUrl,
+              storagePath,
+              size: file.size,
+              fileSizeBytes: file.size,
+            };
+
+            completedCount += 1;
+            const donePercent = Math.round((completedCount / totalCount) * 95);
+            const progressMsg = `⚡ Ap voye mizik ${completedCount} / ${totalCount} (${donePercent}%)... (${file.name})`;
+            setFolderProgressText(progressMsg);
+            setFolderUploadProgress({
+              current: completedCount,
+              total: totalCount,
+              percent: donePercent,
+              statusText: progressMsg,
+            });
+            onProgress?.(completedCount, totalCount, donePercent, file.name);
+          })()
+        );
+      }
+
+      await Promise.all(batchTasks);
+    }
+
+    return { tracks: orderedTracks, totalBytes };
+  };
+
   const processWholeMusicFolder = async (
     rawFiles: File[],
     detectedFolderName: string | null
@@ -758,111 +940,606 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     setIsProcessingFolder(true);
     setFolderUploadError(null);
     setFolderProgressText(
-      `Ap triye & eskane ${audioFiles.length} mizik nan "${folderTitle}"...`
+      `⚡ Ap voye mizik 0 / ${audioFiles.length} (0%)... ("${folderTitle}")`
     );
+    setFolderUploadProgress({
+      current: 0,
+      total: audioFiles.length,
+      percent: 0,
+      statusText: `⚡ Ap voye mizik 0 / ${audioFiles.length} (0%)... ("${folderTitle}")`,
+    });
 
-    const tracks: TrackItem[] = [];
-    let totalBytes = 0;
-
-    for (let i = 0; i < audioFiles.length; i++) {
-      const file = audioFiles[i];
-      const trackNum = i + 1;
-      const numStr = String(trackNum).padStart(3, '0');
-      totalBytes += file.size;
-
-      setFolderProgressText(
-        `Ap prepare odyo (${trackNum}/${audioFiles.length}): ${file.name}...`
+    try {
+      const { tracks, totalBytes } = await uploadAudioFilesToSupabaseFolder(
+        packId,
+        packSlug,
+        audioFiles
       );
 
-      const { metadata, rawBuffer, fileExt } = await analyzeAudioFile(file);
-      storeUploadedMp3Buffer(packId, trackNum, rawBuffer, fileExt);
+      setFolderUploadProgress({
+        current: tracks.length,
+        total: tracks.length,
+        percent: 98,
+        statusText: `⏳ Ap sove lis ${tracks.length} mizik yo nan tab folders Supabase...`,
+      });
 
+      const totalMb = Math.max(1, Math.round(totalBytes / (1024 * 1024)));
+      const fileSizeLabel =
+        totalMb >= 1024 ? `${(totalMb / 1024).toFixed(2)} GB` : `${totalMb} MB`;
+
+      const newPack: MusicPack = {
+        id: packId,
+        slug: packSlug,
+        title: folderTitle,
+        subtitle: `${tracks.length} mizik enpòte an lòd (001–${String(tracks.length).padStart(
+          3,
+          '0'
+        )}).`,
+        genre: 'Folder Enpòte VIP',
+        trackCount: tracks.length,
+        fileSize: fileSizeLabel,
+        bitrate: 'MP3 320kbps',
+        bpmRange: 'Auto Scan',
+        coverImage: '/src/assets/images/hero_studio_console_1795118961756.jpg',
+        tracks,
+        isCustomUpload: true,
+        isComingSoon: false,
+      };
+
+      const saveRes = await upsertRemoteMusicPack(newPack);
+      const savedPack = saveRes.persistedPack || newPack;
+
+      setImportedPackId(savedPack.id);
+      setImportedPackNameInput(savedPack.title);
+      setSelectedPackId(savedPack.id);
+      setUploadedCount(tracks.length);
+
+      setFolderUploadProgress(null);
       setFolderProgressText(
-        `Ap voye nan Supabase Storage (${trackNum}/${audioFiles.length}): ${file.name}...`
+        saveRes.savedToFoldersTable
+          ? `✅ Folder "${folderTitle}" pare! Tout ${tracks.length}/${tracks.length} mizik (${fileSizeLabel}) voye sou Supabase Storage & sove nan bazdone a.`
+          : `✅ Folder "${folderTitle}" pibliye & sove lokalman! Tout ${tracks.length}/${tracks.length} mizik (${fileSizeLabel}) pare pou telechaje touswit.`
       );
 
-      const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `${packSlug}/${numStr}_${sanitizedName}`;
-      let audioUrl: string | undefined = undefined;
+      onCustomPacksChanged();
+      if (onColorsChanged) onColorsChanged();
+    } catch (err: any) {
+      clearUploadedMp3sForPack(packId);
+      setFolderUploadProgress(null);
+      setFolderProgressText(null);
+      setFolderUploadError(
+        `❌ ${err?.message || 'Echèk voye folder mizik la sou Supabase Storage.'}`
+      );
+    } finally {
+      setIsProcessingFolder(false);
+      if (folderInputRef.current) {
+        folderInputRef.current.value = '';
+      }
+    }
+  };
 
-      try {
-        const { error: uploadError } = await supabase.storage
-          .from('music-packs')
-          .upload(storagePath, file, {
-            contentType: file.type || 'audio/mpeg',
-            upsert: true,
-          });
-        if (!uploadError) {
-          const { data: publicUrlData } = supabase.storage
-            .from('music-packs')
-            .getPublicUrl(storagePath);
-          audioUrl = publicUrlData?.publicUrl;
+  const uploadZipFileToSupabaseWithProgress = (
+    storagePath: string,
+    file: File,
+    onProgress: (percent: number, loadedBytes: number, totalBytes: number) => void
+  ): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const cleanPath = storagePath
+        .split('/')
+        .map((seg) => encodeURIComponent(seg))
+        .join('/');
+      const uploadEndpoint = `${SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/music-packs/${cleanPath}`;
+
+      const formData = new FormData();
+      formData.append('cacheControl', '3600');
+      const sanitizedZipFile = new File([file], file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'pack.zip', {
+        type: 'application/zip',
+      });
+      formData.append('', sanitizedZipFile);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', uploadEndpoint, true);
+      xhr.setRequestHeader('apikey', SUPABASE_ANON_KEY);
+      xhr.setRequestHeader('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+      xhr.setRequestHeader('x-upsert', 'true');
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          const pct = Math.min(98, Math.round((event.loaded / event.total) * 98));
+          onProgress(pct, event.loaded, event.total);
         }
-      } catch (err) {
-        console.warn('Supabase storage upload error:', err);
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress(99, file.size, file.size);
+          resolve();
+          return;
+        }
+        let serverMessage = `HTTP ${xhr.status}`;
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          serverMessage = parsed?.message || parsed?.error || serverMessage;
+        } catch {
+          if (xhr.responseText) serverMessage = xhr.responseText.slice(0, 140);
+        }
+        if (
+          xhr.status === 413 ||
+          serverMessage.toLowerCase().includes('maximum allowed size') ||
+          serverMessage.toLowerCase().includes('payload too large')
+        ) {
+          reject(
+            new Error(
+              `Fichye .zip sa a (${(file.size / (1024 * 1024)).toFixed(1)} MB) depase limit gwosè Supabase Storage la. Chwazi « 🔗 Opsyon B: Lyen Dirèk Cloud (Drive / Dropbox / MediaFire / Mega) » pou w pibliye gwo fichye 500MB+ yo nan 1 segonn!`
+            )
+          );
+          return;
+        }
+        reject(
+          new Error(
+            `Echèk upload .ZIP sou Supabase Storage (${serverMessage}). Verifye bucket "music-packs" nan Supabase.`
+          )
+        );
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Erè rezo pandan upload fichye .ZIP la sou Supabase Storage.'));
+      };
+
+      xhr.send(formData);
+    });
+  };
+
+  const handleDirectZipFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    if (!file) return;
+    setSelectedZipFile(file);
+    setFolderUploadError(null);
+    if (!zipDisplayName.trim()) {
+      setZipDisplayName(file.name);
+    }
+  };
+
+  const handleUploadDirectZipFile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedZipFile) {
+      setFolderUploadError('Tanpri chwazi yon fichye .ZIP sou òdinatè w la anvan.');
+      return;
+    }
+    if (selectedZipFile.size <= 1000) {
+      setFolderUploadError('Fichye .ZIP sa a vid oswa twò piti.');
+      return;
+    }
+
+    const rawTitle = (zipDisplayName.trim() || selectedZipFile.name).replace(/\.zip$/i, '').trim();
+    const displayTitle = rawTitle || 'Nouvo_Folder_VIP';
+    const trackCount = Math.max(1, parseInt(zipTrackCountInput, 10) || 100);
+    const packSlug = slugifyPackTitle(displayTitle);
+    const packId = `zip-${packSlug}-${Date.now().toString(36)}`;
+    const sanitizedZipName = (
+      selectedZipFile.name.replace(/[^a-zA-Z0-9._-]/g, '_') || `${packSlug}.zip`
+    ).replace(/(\.zip)?$/i, '.zip');
+    const storagePath = `zips/${packSlug}_${Date.now().toString(36)}_${sanitizedZipName}`;
+
+    const totalMb = selectedZipFile.size / (1024 * 1024);
+    const fileSizeLabel =
+      totalMb >= 1024 ? `${(totalMb / 1024).toFixed(2)} GB` : `${Math.max(1, Math.round(totalMb))} MB`;
+
+    setIsProcessingFolder(true);
+    setFolderUploadError(null);
+    setFolderProgressText(null);
+    setFolderUploadProgress({
+      current: 0,
+      total: 100,
+      percent: 0,
+      statusText: `⚡ Ap voye "${selectedZipFile.name}" (${fileSizeLabel}) sou Supabase...`,
+    });
+
+    try {
+      await uploadZipFileToSupabaseWithProgress(storagePath, selectedZipFile, (pct) => {
+        setFolderUploadProgress({
+          current: pct,
+          total: 100,
+          percent: pct,
+          statusText: `⚡ Ap voye .ZIP la sou Supabase Storage... (${pct}%)`,
+        });
+      });
+
+      const { data: publicUrlData } = supabase.storage
+        .from('music-packs')
+        .getPublicUrl(storagePath);
+
+      const publicZipUrl = publicUrlData?.publicUrl?.trim();
+      if (!publicZipUrl) {
+        throw new Error('Pa kapab jwenn publicUrl pou fichye .ZIP la sou Supabase Storage.');
       }
 
-      tracks.push({
-        number: trackNum,
-        title: metadata.titleGuess,
-        artist: metadata.artistGuess,
-        bpm: 105,
-        duration: metadata.durationFormatted,
-        mixType: 'Original Audio',
-        audioUrl,
-        storagePath,
-        fileSizeBytes: file.size,
+      setFolderUploadProgress({
+        current: 99,
+        total: 100,
+        percent: 99,
+        statusText: `⚡ Ap sove folder la nan tab folders Supabase...`,
       });
+
+      const newPack: MusicPack = {
+        id: packId,
+        slug: packSlug,
+        title: displayTitle,
+        filename: `${displayTitle.replace(/\.zip$/i, '')}.zip`,
+        subtitle: `${trackCount} mizik orijinal nan yon sèl .ZIP (${fileSizeLabel}) — Telechajman Dirèk 00:00 Zero.`,
+        genre: zipGenreInput.trim() || 'Folder VIP .ZIP',
+        trackCount,
+        fileSize: fileSizeLabel,
+        bitrate: 'MP3 320kbps Orijinal',
+        bpmRange: 'Full Pack',
+        coverImage: '/src/assets/images/hero_studio_console_1795118961756.jpg',
+        zipUrl: publicZipUrl,
+        tracks: [
+          {
+            number: 1,
+            name: `${displayTitle.replace(/\.zip$/i, '')}.zip`,
+            title: displayTitle,
+            artist: 'Wesley VIP',
+            bpm: 105,
+            duration: 'ZIP Dirèk',
+            mixType: 'Direct ZIP Archive',
+            url: publicZipUrl,
+            audioUrl: publicZipUrl,
+            fileUrl: publicZipUrl,
+            zipUrl: publicZipUrl,
+            isDirectZip: true,
+            storagePath,
+            size: selectedZipFile.size,
+            fileSizeBytes: selectedZipFile.size,
+          },
+        ],
+        isCustomUpload: true,
+        isComingSoon: false,
+      };
+
+      const saveRes = await upsertRemoteMusicPack(newPack);
+      const savedPack = saveRes.persistedPack || newPack;
+
+      setImportedPackId(savedPack.id);
+      setImportedPackNameInput(savedPack.title);
+      setSelectedPackId(savedPack.id);
+      setSelectedZipFile(null);
+      setZipDisplayName('');
+      if (zipFileInputRef.current) zipFileInputRef.current.value = '';
+
+      setFolderUploadProgress(null);
+      setFolderProgressText(
+        saveRes.savedToFoldersTable
+          ? `✅ .ZIP "${formatZipFolderFilename(savedPack)}" (${fileSizeLabel} · ${trackCount} Mizik) pibliye sou Supabase nan kèk segonn! Kliyan yo ka telechaje vrè fichye a dirèkteman.`
+          : `✅ .ZIP "${formatZipFolderFilename(savedPack)}" (${fileSizeLabel} · ${trackCount} Mizik) pibliye & sove lokalman! Kliyan yo ka telechaje l touswit.`
+      );
+      onCustomPacksChanged();
+      if (onColorsChanged) onColorsChanged();
+    } catch (err: any) {
+      setFolderUploadProgress(null);
+      setFolderUploadError(`❌ ${err?.message || 'Echèk upload fichye .ZIP la.'}`);
+    } finally {
+      setIsProcessingFolder(false);
+    }
+  };
+
+  const handlePublishCloudZipLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const rawUrl = cloudZipUrlInput.trim();
+    if (!rawUrl || (!rawUrl.startsWith('https://') && !rawUrl.startsWith('http://'))) {
+      setFolderUploadError(
+        'Tanpri kole yon vrè lyen HTTPS dirèk (.ZIP sou Google Drive, Dropbox, MediaFire, Mega, elatriye).'
+      );
+      return;
     }
 
-    const totalMb = Math.max(1, Math.round(totalBytes / (1024 * 1024)));
-    const fileSizeLabel =
-      totalMb >= 1024 ? `${(totalMb / 1024).toFixed(2)} GB` : `${totalMb} MB`;
-
-    const newPack: MusicPack = {
-      id: packId,
-      slug: packSlug,
-      title: folderTitle,
-      subtitle: `${tracks.length} mizik enpòte an lòd (001–${String(tracks.length).padStart(
-        3,
-        '0'
-      )}).`,
-      genre: 'Folder Enpòte VIP',
-      trackCount: tracks.length,
-      fileSize: fileSizeLabel,
-      bitrate: 'MP3 320kbps',
-      bpmRange: 'Auto Scan',
-      coverImage: '/src/assets/images/hero_studio_console_1795118961756.jpg',
-      tracks,
-      isCustomUpload: true,
-      isComingSoon: false,
-    };
-
-    upsertCustomPack(newPack);
-    void upsertRemoteMusicPack(newPack);
-
-    setImportedPackId(packId);
-    setImportedPackNameInput(folderTitle);
-    setSelectedPackId(packId);
-    setUploadedCount(tracks.length);
-
-    setIsProcessingFolder(false);
-    setFolderProgressText(
-      `✅ Folder "${folderTitle}" pare! ${tracks.length} mizik nimewote ak odyo konplè pare pou telechaje.`
-    );
-
-    onCustomPacksChanged();
-    if (onColorsChanged) onColorsChanged();
-
-    if (folderInputRef.current) {
-      folderInputRef.current.value = '';
+    const rawTitle = cloudZipNameInput.trim().replace(/\.zip$/i, '').trim();
+    if (!rawTitle) {
+      setFolderUploadError('Tanpri antre Non Folder la (egzanp: RABODAY_DIFE🏆🍾🔥.zip).');
+      return;
     }
+
+    const normalizedUrl = normalizeDirectZipUrl(rawUrl);
+    const trackCount = Math.max(1, parseInt(cloudZipTrackCountInput, 10) || 100);
+    const fileSizeLabel = cloudZipSizeInput.trim() || '500 MB';
+    const packSlug = slugifyPackTitle(rawTitle);
+    const packId = `linkzip-${packSlug}-${Date.now().toString(36)}`;
+
+    setIsProcessingFolder(true);
+    setFolderUploadError(null);
+    setFolderProgressText(null);
+    setFolderUploadProgress({
+      current: 1,
+      total: 1,
+      percent: 90,
+      statusText: `⚡ Ap pibliye "${rawTitle}.zip" nan Supabase (1 segonn)...`,
+    });
+
+    try {
+      const newPack: MusicPack = {
+        id: packId,
+        slug: packSlug,
+        title: rawTitle,
+        filename: `${rawTitle}.zip`,
+        subtitle: `${trackCount} mizik orijinal (${fileSizeLabel}) — Lyen Telechajman Dirèk .ZIP`,
+        genre: cloudZipGenreInput.trim() || 'Folder VIP .ZIP',
+        trackCount,
+        fileSize: fileSizeLabel,
+        bitrate: 'MP3 320kbps Orijinal',
+        bpmRange: 'Full Pack',
+        coverImage: '/src/assets/images/hero_studio_console_1795118961756.jpg',
+        zipUrl: normalizedUrl,
+        tracks: [
+          {
+            number: 1,
+            name: `${rawTitle}.zip`,
+            title: rawTitle,
+            artist: 'Wesley VIP',
+            bpm: 105,
+            duration: 'ZIP Dirèk',
+            mixType: 'Direct Cloud ZIP Link',
+            url: normalizedUrl,
+            audioUrl: normalizedUrl,
+            fileUrl: normalizedUrl,
+            zipUrl: normalizedUrl,
+            isDirectZip: true,
+          },
+        ],
+        isCustomUpload: true,
+        isComingSoon: false,
+      };
+
+      const saveRes = await upsertRemoteMusicPack(newPack);
+      const savedPack = saveRes.persistedPack || newPack;
+
+      setImportedPackId(savedPack.id);
+      setImportedPackNameInput(savedPack.title);
+      setSelectedPackId(savedPack.id);
+      setCloudZipUrlInput('');
+      setCloudZipNameInput('');
+      setFolderUploadProgress(null);
+      setFolderProgressText(
+        saveRes.savedToFoldersTable
+          ? `✅ "${formatZipFolderFilename(savedPack)}" (${trackCount} Mizik · ${fileSizeLabel}) pibliye nan 1 segonn sou Supabase!`
+          : `✅ "${formatZipFolderFilename(savedPack)}" (${trackCount} Mizik · ${fileSizeLabel}) pibliye & sove lokalman nan 1 segonn!`
+      );
+      onCustomPacksChanged();
+      if (onColorsChanged) onColorsChanged();
+    } catch (err: any) {
+      setFolderUploadProgress(null);
+      setFolderUploadError(`❌ ${err?.message || 'Echèk sove lyen .ZIP la.'}`);
+    } finally {
+      setIsProcessingFolder(false);
+    }
+  };
+
+  const syncFolderQueue = (
+    updater: (prev: FolderQueueItem[]) => FolderQueueItem[]
+  ) => {
+    const next = updater(folderQueueRef.current);
+    folderQueueRef.current = next;
+    setFolderQueue(next);
+  };
+
+  const clearCompletedFolderQueue = () => {
+    if (isQueueRunningRef.current) {
+      syncFolderQueue((prev) =>
+        prev.filter((item) => item.status === 'waiting' || item.status === 'uploading')
+      );
+      return;
+    }
+    syncFolderQueue(() => []);
+  };
+
+  const runSequentialFolderQueue = async () => {
+    if (isQueueRunningRef.current) return;
+    isQueueRunningRef.current = true;
+    setIsProcessingFolder(true);
+    setFolderUploadError(null);
+
+    try {
+      while (true) {
+        const nextItem = folderQueueRef.current.find((item) => item.status === 'waiting');
+        if (!nextItem) break;
+
+        const folderTitle = nextItem.folderName.trim() || `Nouvo_Folder_${nextItem.totalCount}_Mizik`;
+        const packSlug = slugifyPackTitle(folderTitle);
+        const packId = `custom-${packSlug}-${Date.now().toString(36)}-${Math.random()
+          .toString(36)
+          .slice(2, 6)}`;
+
+        syncFolderQueue((prev) =>
+          prev.map((q) =>
+            q.queueId === nextItem.queueId
+              ? { ...q, status: 'uploading', completedCount: 0, percent: 0, errorMessage: undefined }
+              : q
+          )
+        );
+
+        const queueIdx =
+          folderQueueRef.current.findIndex((q) => q.queueId === nextItem.queueId) + 1;
+        const queueLen = folderQueueRef.current.length;
+
+        setFolderProgressText(
+          `⚡ Folder ${queueIdx}/${queueLen}: "${folderTitle}" — Ap monte 0/${nextItem.totalCount}...`
+        );
+        setFolderUploadProgress({
+          current: 0,
+          total: nextItem.totalCount,
+          percent: 0,
+          statusText: `⚡ [${queueIdx}/${queueLen}] "${folderTitle}" — Ap monte 0/${nextItem.totalCount}...`,
+        });
+
+        try {
+          const { tracks, totalBytes } = await uploadAudioFilesToSupabaseFolder(
+            packId,
+            packSlug,
+            nextItem.files,
+            1,
+            (completed, total, percent) => {
+              syncFolderQueue((prev) =>
+                prev.map((q) =>
+                  q.queueId === nextItem.queueId
+                    ? { ...q, completedCount: completed, percent }
+                    : q
+                )
+              );
+              setFolderUploadProgress({
+                current: completed,
+                total,
+                percent,
+                statusText: `⚡ [${queueIdx}/${queueLen}] "${folderTitle}" — Ap monte kounye a (${completed}/${total})...`,
+              });
+            }
+          );
+
+          const totalMb = Math.max(1, Math.round(totalBytes / (1024 * 1024)));
+          const fileSizeLabel =
+            totalMb >= 1024 ? `${(totalMb / 1024).toFixed(2)} GB` : `${totalMb} MB`;
+
+          const newPack: MusicPack = {
+            id: packId,
+            slug: packSlug,
+            title: folderTitle,
+            subtitle: `${tracks.length} mizik enpòte an lòd (001–${String(tracks.length).padStart(
+              3,
+              '0'
+            )}).`,
+            genre: 'Folder Enpòte VIP',
+            trackCount: tracks.length,
+            fileSize: fileSizeLabel,
+            bitrate: 'MP3 320kbps',
+            bpmRange: 'Auto Scan',
+            coverImage: '/src/assets/images/hero_studio_console_1795118961756.jpg',
+            tracks,
+            isCustomUpload: true,
+            isComingSoon: false,
+          };
+
+          // Save ONLY core columns (name, tracks, track_count, is_active) + automatic localStorage fallback
+          const saveRes = await upsertRemoteMusicPack(newPack);
+          const savedPack = saveRes.persistedPack || newPack;
+
+          syncFolderQueue((prev) =>
+            prev.map((q) =>
+              q.queueId === nextItem.queueId
+                ? {
+                    ...q,
+                    status: 'done',
+                    completedCount: tracks.length,
+                    percent: 100,
+                    savedPackId: savedPack.id,
+                    fileSizeLabel,
+                  }
+                : q
+            )
+          );
+
+          setImportedPackId(savedPack.id);
+          setImportedPackNameInput(savedPack.title);
+          setSelectedPackId(savedPack.id);
+          setUploadedCount(tracks.length);
+
+          onCustomPacksChanged();
+          if (onColorsChanged) onColorsChanged();
+        } catch (err: any) {
+          clearUploadedMp3sForPack(packId);
+          syncFolderQueue((prev) =>
+            prev.map((q) =>
+              q.queueId === nextItem.queueId
+                ? {
+                    ...q,
+                    status: 'error',
+                    errorMessage: err?.message || 'Echèk upload folder sa a.',
+                  }
+                : q
+            )
+          );
+        }
+      }
+    } finally {
+      isQueueRunningRef.current = false;
+      setIsProcessingFolder(false);
+      setFolderUploadProgress(null);
+
+      const finalQueue = folderQueueRef.current;
+      const doneTotal = finalQueue.filter((q) => q.status === 'done').length;
+      const errorTotal = finalQueue.filter((q) => q.status === 'error').length;
+
+      if (doneTotal > 0 && errorTotal === 0) {
+        setFolderProgressText(
+          `✅ Tout ${doneTotal} folder yo monte youn apre lòt & pibliye sou sit la!`
+        );
+      } else if (doneTotal > 0 && errorTotal > 0) {
+        setFolderProgressText(
+          `✅ ${doneTotal} folder fini ak siksè (${errorTotal} gen erè — verifye lis la anba a).`
+        );
+      }
+    }
+  };
+
+  const enqueueFolderGroups = (groups: FolderAudioGroup[]) => {
+    if (groups.length === 0) {
+      setFolderUploadError(
+        'Pa gen okenn fichye mizik (.MP3, .WAV, .M4A, elatriye) yo jwenn nan folder sa yo.'
+      );
+      return;
+    }
+
+    const newItems: FolderQueueItem[] = groups.map((g, idx) => ({
+      queueId: `fq-${Date.now().toString(36)}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      folderName: g.folderName,
+      files: g.files,
+      totalCount: g.files.length,
+      completedCount: 0,
+      percent: 0,
+      status: 'waiting',
+    }));
+
+    setFolderUploadError(null);
+    setUploadMode('mp3_batch');
+    syncFolderQueue((prev) => {
+      // If all previous items already finished and queue isn't active, start a fresh visible batch + append
+      const hasActiveOrWaiting = prev.some(
+        (item) => item.status === 'waiting' || item.status === 'uploading'
+      );
+      return hasActiveOrWaiting ? [...prev, ...newItems] : [...prev, ...newItems];
+    });
+
+    void runSequentialFolderQueue();
+  };
+
+  const handleMultiFolderPickerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length === 0) return;
+    const groups = groupAudioFilesBySubfolder(files);
+    enqueueFolderGroups(groups);
+    if (multiFolderInputRef.current) multiFolderInputRef.current.value = '';
+  };
+
+  const handleMultiMp3PickerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length === 0) return;
+    const customName =
+      mp3CustomFolderName.trim() || extractFolderNameFromFileList(files) || `Folder_VIP_${files.length}_Mizik`;
+    if (isQueueRunningRef.current || folderQueueRef.current.some((q) => q.status === 'waiting')) {
+      enqueueFolderGroups([{ folderName: customName, files: sortAudioFilesSequentially(files.filter(isAudioFile)) }]);
+    } else {
+      void processWholeMusicFolder(files, customName);
+    }
+    if (multiMp3InputRef.current) multiMp3InputRef.current.value = '';
   };
 
   const handleFolderPickerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : [];
     if (files.length === 0) return;
-    const folderName = extractFolderNameFromFileList(files);
+    const groups = groupAudioFilesBySubfolder(files);
+    if (groups.length > 1 || isQueueRunningRef.current) {
+      enqueueFolderGroups(groups);
+      if (folderInputRef.current) folderInputRef.current.value = '';
+      return;
+    }
+    const folderName = mp3CustomFolderName.trim() || extractFolderNameFromFileList(files);
     void processWholeMusicFolder(files, folderName);
   };
 
@@ -870,10 +1547,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingFolder(false);
-    if (isProcessingFolder) return;
 
     const { files, folderName } = await extractDroppedAudioFiles(e.dataTransfer);
-    void processWholeMusicFolder(files, folderName);
+    const groups = groupAudioFilesBySubfolder(files);
+    if (groups.length > 1 || isQueueRunningRef.current) {
+      enqueueFolderGroups(groups);
+      return;
+    }
+    if (isProcessingFolder) return;
+    void processWholeMusicFolder(files, mp3CustomFolderName.trim() || folderName);
   };
 
   const handleCreateComingSoonFolder = (e: React.FormEvent) => {
@@ -887,6 +1569,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     }
 
     const created = createComingSoonPack(trimmedName, comingSoonGenre);
+    void upsertRemoteMusicPack(created);
     setComingSoonName('');
     setComingSoonError(null);
     setComingSoonSuccess(
@@ -911,87 +1594,65 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     setFolderUploadError(null);
     setComingSoonSuccess(null);
     setFolderProgressText(
-      `Ap prepare ${audioFiles.length} mizik pou aktive "${formatZipFolderFilename(pack)}"...`
+      `⚡ Ap voye mizik 0 / ${audioFiles.length} (0%)... ("${formatZipFolderFilename(pack)}")`
     );
-
-    const tracks: TrackItem[] = [];
-    let totalBytes = 0;
+    setFolderUploadProgress({
+      current: 0,
+      total: audioFiles.length,
+      percent: 0,
+      statusText: `⚡ Ap voye mizik 0 / ${audioFiles.length} (0%)... ("${formatZipFolderFilename(pack)}")`,
+    });
 
     clearUploadedMp3sForPack(pack.id);
 
-    for (let i = 0; i < audioFiles.length; i++) {
-      const file = audioFiles[i];
-      const trackNum = i + 1;
-      const numStr = String(trackNum).padStart(3, '0');
-      totalBytes += file.size;
-
-      setFolderProgressText(
-        `Ap prepare odyo (${trackNum}/${audioFiles.length}): ${file.name}...`
+    try {
+      const { tracks, totalBytes } = await uploadAudioFilesToSupabaseFolder(
+        pack.id,
+        pack.slug,
+        audioFiles
       );
 
-      const { metadata, rawBuffer, fileExt } = await analyzeAudioFile(file);
-      storeUploadedMp3Buffer(pack.id, trackNum, rawBuffer, fileExt);
-
-      setFolderProgressText(
-        `Ap voye nan Supabase Storage (${trackNum}/${audioFiles.length}): ${file.name}...`
-      );
-
-      const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `${pack.slug}/${numStr}_${sanitizedName}`;
-      let audioUrl: string | undefined = undefined;
-
-      try {
-        const { error: uploadError } = await supabase.storage
-          .from('music-packs')
-          .upload(storagePath, file, {
-            contentType: file.type || 'audio/mpeg',
-            upsert: true,
-          });
-        if (!uploadError) {
-          const { data: publicUrlData } = supabase.storage
-            .from('music-packs')
-            .getPublicUrl(storagePath);
-          audioUrl = publicUrlData?.publicUrl;
-        }
-      } catch (err) {
-        console.warn('Supabase storage upload error:', err);
-      }
-
-      tracks.push({
-        number: trackNum,
-        title: metadata.titleGuess,
-        artist: metadata.artistGuess,
-        bpm: 105,
-        duration: metadata.durationFormatted,
-        mixType: 'Original Audio',
-        audioUrl,
-        storagePath,
-        fileSizeBytes: file.size,
+      setFolderUploadProgress({
+        current: tracks.length,
+        total: tracks.length,
+        percent: 98,
+        statusText: `⏳ Ap sove & aktive "${formatZipFolderFilename(pack)}" nan Supabase...`,
       });
-    }
 
-    const totalMb = Math.max(1, Math.round(totalBytes / (1024 * 1024)));
-    const fileSizeLabel =
-      totalMb >= 1024 ? `${(totalMb / 1024).toFixed(2)} GB` : `${totalMb} MB`;
+      const totalMb = Math.max(1, Math.round(totalBytes / (1024 * 1024)));
+      const fileSizeLabel =
+        totalMb >= 1024 ? `${(totalMb / 1024).toFixed(2)} GB` : `${totalMb} MB`;
 
-    const activatedPack = activateComingSoonPack(pack, tracks, fileSizeLabel);
-    void upsertRemoteMusicPack(activatedPack);
+      const activatedPack = activateComingSoonPack(pack, tracks, fileSizeLabel);
+      const saveRes = await upsertRemoteMusicPack(activatedPack);
+      const savedPack = saveRes.persistedPack || activatedPack;
 
-    setImportedPackId(activatedPack.id);
-    setImportedPackNameInput(activatedPack.title);
-    setSelectedPackId(activatedPack.id);
-    setUploadedCount(tracks.length);
-    setActivatingPackId(null);
-    setIsProcessingFolder(false);
-    setFolderProgressText(
-      `✅ Folder "${formatZipFolderFilename(activatedPack)}" aktive ak ${tracks.length} mizik! Kounye a li disponib pou telechaje sou sit la.`
-    );
+      setImportedPackId(savedPack.id);
+      setImportedPackNameInput(savedPack.title);
+      setSelectedPackId(savedPack.id);
+      setUploadedCount(tracks.length);
+      setFolderUploadProgress(null);
+      setFolderProgressText(
+        saveRes.savedToFoldersTable
+          ? `✅ Folder "${formatZipFolderFilename(savedPack)}" aktive ak tout ${tracks.length}/${tracks.length} mizik (${fileSizeLabel}) sou Supabase Storage!`
+          : `✅ Folder "${formatZipFolderFilename(savedPack)}" aktive & sove lokalman ak tout ${tracks.length}/${tracks.length} mizik (${fileSizeLabel})!`
+      );
 
-    onCustomPacksChanged();
-    if (onColorsChanged) onColorsChanged();
-
-    if (activatePackInputRef.current) {
-      activatePackInputRef.current.value = '';
+      onCustomPacksChanged();
+      if (onColorsChanged) onColorsChanged();
+    } catch (err: any) {
+      clearUploadedMp3sForPack(pack.id);
+      setFolderUploadProgress(null);
+      setFolderProgressText(null);
+      setFolderUploadError(
+        `❌ ${err?.message || 'Echèk voye mizik yo sou Supabase Storage.'}`
+      );
+    } finally {
+      setActivatingPackId(null);
+      setIsProcessingFolder(false);
+      if (activatePackInputRef.current) {
+        activatePackInputRef.current.value = '';
+      }
     }
   };
 
@@ -1013,16 +1674,152 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     void processActivateComingSoonPack(targetPack, files);
   };
 
+  const processAppendMp3sToPack = async (pack: MusicPack, rawFiles: File[]) => {
+    const audioFiles = sortAudioFilesSequentially(rawFiles.filter(isAudioFile));
+    if (audioFiles.length === 0) {
+      setFolderUploadError(
+        'Pa gen okenn fichye mizik (.MP3, .WAV, .M4A, elatriye) yo jwenn pou ajoute nan folder sa a.'
+      );
+      setAppendingPackId(null);
+      return;
+    }
+
+    const existingRealTracks = (pack.tracks || []).filter(
+      (t) =>
+        !t.isDirectZip &&
+        Boolean(t.url || t.audioUrl || t.fileUrl || t.storagePath || hasUploadedMp3Buffer(pack.id, t.number))
+    );
+    const nextStartNumber =
+      existingRealTracks.length > 0
+        ? Math.max(...existingRealTracks.map((t) => Number(t.number) || 0)) + 1
+        : 1;
+
+    setIsProcessingFolder(true);
+    setFolderUploadError(null);
+    setComingSoonSuccess(null);
+    setFolderProgressText(
+      `⚡ Ap ajoute ${audioFiles.length} mizik nan "${formatZipFolderFilename(pack)}" (#${String(
+        nextStartNumber
+      ).padStart(3, '0')}–#${String(nextStartNumber + audioFiles.length - 1).padStart(3, '0')})...`
+    );
+    setFolderUploadProgress({
+      current: 0,
+      total: audioFiles.length,
+      percent: 0,
+      statusText: `⚡ Ap ajoute mizik 0 / ${audioFiles.length} (0%) nan "${formatZipFolderFilename(pack)}"...`,
+    });
+
+    try {
+      const { tracks: appendedTracks, totalBytes: newBytes } =
+        await uploadAudioFilesToSupabaseFolder(
+          pack.id,
+          pack.slug,
+          audioFiles,
+          nextStartNumber
+        );
+
+      const mergedTracks = [...existingRealTracks, ...appendedTracks];
+      const existingBytes = existingRealTracks.reduce(
+        (sum, t) => sum + (Number(t.size ?? t.fileSizeBytes) || 0),
+        0
+      );
+      const combinedBytes = existingBytes + newBytes;
+      const totalMb = Math.max(1, Math.round(combinedBytes / (1024 * 1024)));
+      const fileSizeLabel =
+        combinedBytes > 0
+          ? totalMb >= 1024
+            ? `${(totalMb / 1024).toFixed(2)} GB`
+            : `${totalMb} MB`
+          : pack.fileSize;
+
+      setFolderUploadProgress({
+        current: appendedTracks.length,
+        total: appendedTracks.length,
+        percent: 98,
+        statusText: `⚡ Ap mete ajou ${mergedTracks.length} mizik total nan Supabase...`,
+      });
+
+      const updatedPack: MusicPack = {
+        ...pack,
+        zipUrl: undefined,
+        tracks: mergedTracks,
+        trackCount: mergedTracks.length,
+        fileSize: fileSizeLabel,
+        bitrate: pack.bitrate && !pack.bitrate.includes('Byento') ? pack.bitrate : 'MP3 320kbps',
+        bpmRange: pack.bpmRange || 'Auto Scan',
+        subtitle: `${mergedTracks.length} mizik an lòd (001–${String(mergedTracks.length).padStart(
+          3,
+          '0'
+        )}) pare pou telechaje.`,
+        isCustomUpload: true,
+        isComingSoon: false,
+      };
+
+      const saveRes = await upsertRemoteMusicPack(updatedPack);
+      const savedPack = saveRes.persistedPack || updatedPack;
+
+      setSelectedPackId(savedPack.id);
+      setUploadedCount(mergedTracks.length);
+      setFolderUploadProgress(null);
+      setFolderProgressText(
+        saveRes.savedToFoldersTable
+          ? `✅ ${appendedTracks.length} nouvo mizik ajoute nan "${formatZipFolderFilename(
+              savedPack
+            )}"! Kounye a folder la gen ${mergedTracks.length} Mizik total (${fileSizeLabel}) nan Supabase.`
+          : `✅ ${appendedTracks.length} nouvo mizik ajoute nan "${formatZipFolderFilename(
+              savedPack
+            )}" & sove lokalman! Total: ${mergedTracks.length} Mizik (${fileSizeLabel}).`
+      );
+
+      onCustomPacksChanged();
+      if (onColorsChanged) onColorsChanged();
+    } catch (err: any) {
+      setFolderUploadProgress(null);
+      setFolderProgressText(null);
+      setFolderUploadError(
+        `❌ ${err?.message || 'Echèk pandan ou t ap ajoute mizik nan folder sa a.'}`
+      );
+    } finally {
+      setAppendingPackId(null);
+      setIsProcessingFolder(false);
+      if (appendMp3InputRef.current) {
+        appendMp3InputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleStartAppendMp3sToPack = (packId: string) => {
+    setAppendingPackId(packId);
+    setFolderUploadError(null);
+    window.setTimeout(() => {
+      appendMp3InputRef.current?.click();
+    }, 0);
+  };
+
+  const handleAppendFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    const targetPack = allPacks.find((p) => p.id === appendingPackId);
+    if (files.length === 0 || !targetPack) {
+      setAppendingPackId(null);
+      return;
+    }
+    void processAppendMp3sToPack(targetPack, files);
+  };
+
   const handleRenameImportedPack = (nextTitle: string) => {
     setImportedPackNameInput(nextTitle);
     if (importedPackId) {
-      renameCustomPack(importedPackId, nextTitle);
+      const nextPacks = renameCustomPack(importedPackId, nextTitle);
+      const renamed = nextPacks.find((p) => p.id === importedPackId);
+      if (renamed) {
+        void upsertRemoteMusicPack(renamed);
+      }
       onCustomPacksChanged();
     }
   };
 
   const handleDeletePack = (packId: string) => {
-    deletePackById(packId);
+    void deleteRemoteMusicPack(packId);
     clearUploadedMp3sForPack(packId);
     if (importedPackId === packId) {
       setImportedPackId(null);
@@ -1447,78 +2244,607 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     </div>
                   </form>
                 ) : (
-                  /* Full-Folder Upload & Drag-and-Drop Zone */
-                  <div
-                    onDragEnter={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setIsDraggingFolder(true);
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      if (!isDraggingFolder) setIsDraggingFolder(true);
-                    }}
-                    onDragLeave={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-                      setIsDraggingFolder(false);
-                    }}
-                    onDrop={(e) => void handleFolderDrop(e)}
-                    className={`rounded-2xl border-2 border-dashed p-5 sm:p-6 transition-all ${
-                      isDraggingFolder
-                        ? 'border-emerald-400 bg-[#10B981]/20 shadow-[0_0_30px_rgba(16,185,129,0.2)]'
-                        : 'border-amber-400/70 bg-gradient-to-br from-[#10B981]/10 via-[#262A30] to-amber-500/10 hover:border-emerald-400/90'
-                    }`}
-                  >
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-                      <div className="flex items-start gap-4">
-                        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#10B981]/25 to-amber-500/25 border border-amber-400/40 text-amber-300">
-                          <FolderUp className="h-7 w-7" />
+                  /* Super-Fast Direct .ZIP + Cloud Link + Batch MP3 Uploader */
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-[#10B981]/50 bg-gradient-to-r from-[#10B981]/15 via-[#262A30] to-amber-500/10 p-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#10B981] text-[#0B1410] shadow-md">
+                          <Zap className="h-5 w-5" />
                         </div>
-                        <div>
-                          <h4 className="font-display text-base sm:text-lg font-extrabold text-amber-300 tracking-tight">
-                            📂 CHWAZI OSWA GLISE TOUT YON FOLDER MIZIK ISIT LA
+                        <div className="min-w-0">
+                          <h4 className="font-display text-sm sm:text-base font-extrabold text-emerald-300 tracking-tight">
+                            ⚡ LAGE 1 FICHYE .ZIP DIRÈK (5 SEGONN — ZERO 00:00)
                           </h4>
-                          <p className="text-xs sm:text-sm text-[#D1D5DB] mt-1 leading-relaxed">
-                            Chwazi tout yon folder mizik sou òdinatè Windows/Mac ou an 1 klik, oswa
-                            glise l dirèkteman anndan bwat sa a. Sistèm nan ap mete non folder la,
-                            nimewote tout mizik yo an lòd (
-                            <span className="font-mono text-emerald-300">001 - ...</span>), epi
-                            mete yo pare pou telechaje nan .ZIP!
+                          <p className="text-xs text-[#D1D5DB] mt-0.5 leading-relaxed">
+                            Chwazi yon sèl fichye <span className="font-mono text-emerald-300">.zip</span>{' '}
+                            tou pare sou laptop ou, kole yon lyen Google Drive / Dropbox / MediaFire /
+                            Mega pou gwo pake 500MB+, oswa voye plizyè MP3 ansanm.
                           </p>
                         </div>
                       </div>
 
-                      <div className="shrink-0">
-                        <input
-                          ref={folderInputRef}
-                          id="admin-full-folder-input"
-                          type="file"
-                          multiple
-                          accept="audio/*"
-                          {...({
-                            webkitdirectory: '',
-                            directory: '',
-                          } as React.InputHTMLAttributes<HTMLInputElement>)}
-                          onChange={handleFolderPickerChange}
-                          className="hidden"
-                        />
-                        <label
-                          htmlFor="admin-full-folder-input"
-                          className={`inline-flex w-full sm:w-auto items-center justify-center gap-2 min-h-[48px] px-5 py-3 rounded-xl bg-gradient-to-r from-[#10B981] to-amber-400 hover:brightness-110 text-[#0B1410] font-display font-extrabold text-xs sm:text-sm whitespace-nowrap shadow-lg cursor-pointer transition-all ${
-                            isProcessingFolder ? 'opacity-60 pointer-events-none' : ''
+                      {/* 3 Fast Upload Options Selector */}
+                      <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadMode('zip_file');
+                            setFolderUploadError(null);
+                          }}
+                          className={`flex items-center gap-2.5 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            uploadMode === 'zip_file'
+                              ? 'bg-[#10B981]/20 border-[#10B981] text-emerald-200 shadow-[0_0_16px_rgba(16,185,129,0.2)]'
+                              : 'bg-[#1C1F24] border-[#363B44] text-[#D1D5DB] hover:border-[#10B981]/50'
                           }`}
                         >
-                          <FolderOpen className="h-4 w-4 shrink-0" />
+                          <FileArchive className="h-4 w-4 shrink-0 text-[#10B981]" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-extrabold truncate">
+                              Opsyon A: 1 Fichye .ZIP
+                            </p>
+                            <p className="text-[10px] text-[#9CA3AF] truncate">
+                              Upload dirèk sou Supabase (Pi Vit)
+                            </p>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadMode('cloud_link');
+                            setFolderUploadError(null);
+                          }}
+                          className={`flex items-center gap-2.5 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            uploadMode === 'cloud_link'
+                              ? 'bg-amber-500/20 border-amber-400 text-amber-200 shadow-[0_0_16px_rgba(245,158,11,0.18)]'
+                              : 'bg-[#1C1F24] border-[#363B44] text-[#D1D5DB] hover:border-amber-400/50'
+                          }`}
+                        >
+                          <Link2 className="h-4 w-4 shrink-0 text-amber-300" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-extrabold truncate">
+                              Opsyon B: Lyen Cloud (.ZIP)
+                            </p>
+                            <p className="text-[10px] text-[#9CA3AF] truncate">
+                              Drive / Dropbox / MediaFire / Mega (1s)
+                            </p>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadMode('mp3_batch');
+                            setFolderUploadError(null);
+                          }}
+                          className={`flex items-center gap-2.5 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            uploadMode === 'mp3_batch'
+                              ? 'bg-sky-500/20 border-sky-400 text-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.18)]'
+                              : 'bg-[#1C1F24] border-[#363B44] text-[#D1D5DB] hover:border-sky-400/50'
+                          }`}
+                        >
+                          <Music className="h-4 w-4 shrink-0 text-sky-300" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-extrabold truncate">
+                              Opsyon C: Plizyè .MP3 / Plizyè Folder
+                            </p>
+                            <p className="text-[10px] text-[#9CA3AF] truncate">
+                              1 Folder oswa plizyè folder youn apre lòt
+                            </p>
+                          </div>
+                        </button>
+                      </div>
+
+                      {/* Shared Multi-Folder Hidden Input & Instant Quick-Trigger Bar */}
+                      <input
+                        ref={multiFolderInputRef}
+                        id="admin-multi-folder-input"
+                        type="file"
+                        multiple
+                        accept="audio/*"
+                        {...({
+                          webkitdirectory: '',
+                          directory: '',
+                        } as React.InputHTMLAttributes<HTMLInputElement>)}
+                        onChange={handleMultiFolderPickerChange}
+                        className="hidden"
+                      />
+                      <div className="mt-3 rounded-xl border border-amber-400/45 bg-gradient-to-r from-amber-500/15 via-[#1C1F24] to-[#10B981]/15 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-extrabold text-amber-300">
+                            ⚡ Batch Plizyè Folder Otomatik (1 ➔ 2 ➔ 3...)
+                          </p>
+                          <p className="text-[11px] text-[#D1D5DB] mt-0.5 leading-snug">
+                            Chwazi yon folder paran ki gen plizyè sou-folder (egzanp:{' '}
+                            <span className="font-mono text-emerald-300">KONPA_DIFE</span>,{' '}
+                            <span className="font-mono text-emerald-300">RABODAY_2026</span>,{' '}
+                            <span className="font-mono text-emerald-300">REGGAE_VOL_1</span>) oswa
+                            ajoute plizyè folder nan lis la — y ap pibliye youn apre lòt otomatikman!
+                          </p>
+                        </div>
+                        <label
+                          htmlFor="admin-multi-folder-input"
+                          className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-[#10B981] hover:brightness-110 text-[#0B1410] font-display font-extrabold text-xs whitespace-nowrap shadow-lg cursor-pointer transition-all shrink-0"
+                        >
+                          <FolderUp className="h-4 w-4 shrink-0" />
                           <span>
-                            {isProcessingFolder
-                              ? 'Ap Eskane Folder la...'
-                              : '📁 CHWAZI YON FOLDER SOU LAPTOP LA'}
+                            📂 CHWAZI PLIZYE FOLDER AN MENM TAN (Y ap monte youn apre lòt)
                           </span>
                         </label>
                       </div>
+                    </div>
+
+                    {uploadMode === 'zip_file' && (
+                      <form
+                        onSubmit={handleUploadDirectZipFile}
+                        className="rounded-2xl border border-[#10B981]/45 bg-[#1C1F24] p-5 space-y-4"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#363B44]">
+                          <div>
+                            <h5 className="font-display text-sm sm:text-base font-bold text-[#F3F4F6]">
+                              📦 Opsyon A — Voye 1 Sèl Fichye .ZIP Dirèkteman sou Supabase Storage
+                            </h5>
+                            <p className="text-xs text-[#9CA3AF] mt-0.5">
+                              Sere tout 100 mizik ou yo nan 1 .zip sou Windows ou epi voye l an 1 sèl
+                              fwa. Kliyan yo ap telechaje egzakteman fichye .zip sa a san okenn pèt kalite!
+                            </p>
+                          </div>
+
+                          <div className="shrink-0">
+                            <input
+                              ref={zipFileInputRef}
+                              id="admin-direct-zip-input"
+                              type="file"
+                              accept=".zip,application/zip,application/x-zip-compressed"
+                              onChange={handleDirectZipFilePicked}
+                              className="hidden"
+                            />
+                            <label
+                              htmlFor="admin-direct-zip-input"
+                              className={`inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-[#262A30] border border-[#10B981]/60 hover:bg-[#10B981]/15 text-emerald-300 font-bold text-xs sm:text-sm whitespace-nowrap cursor-pointer transition-colors ${
+                                isProcessingFolder ? 'opacity-60 pointer-events-none' : ''
+                              }`}
+                            >
+                              <FileArchive className="h-4 w-4 shrink-0" />
+                              <span>
+                                {selectedZipFile
+                                  ? `✔ Chanje (${selectedZipFile.name.slice(0, 22)})`
+                                  : '📁 Chwazi 1 Fichye .ZIP'}
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+
+                        {selectedZipFile && (
+                          <div className="rounded-xl bg-[#10B981]/10 border border-[#10B981]/35 px-3.5 py-2 text-xs text-emerald-200 flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-mono font-bold truncate">
+                              📦 {selectedZipFile.name}
+                            </span>
+                            <span className="font-mono font-extrabold text-emerald-300 shrink-0">
+                              {(selectedZipFile.size / (1024 * 1024)).toFixed(2)} MB
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                          <div className="md:col-span-6">
+                            <label
+                              htmlFor="direct-zip-display-name"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Non Folder la (Ex: RABODAY_DIFE🏆🍾🔥.zip)
+                            </label>
+                            <input
+                              id="direct-zip-display-name"
+                              type="text"
+                              value={zipDisplayName}
+                              onChange={(e) => setZipDisplayName(e.target.value)}
+                              placeholder="RABODAY_DIFE🏆🍾🔥.zip"
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm font-mono text-[#F3F4F6] placeholder:text-[#9CA3AF] focus:border-[#10B981] focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="md:col-span-3">
+                            <label
+                              htmlFor="direct-zip-track-count"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Kantite Mizik (Ex: 100)
+                            </label>
+                            <input
+                              id="direct-zip-track-count"
+                              type="number"
+                              min={1}
+                              value={zipTrackCountInput}
+                              onChange={(e) => setZipTrackCountInput(e.target.value)}
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm font-mono text-[#F3F4F6] focus:border-[#10B981] focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="md:col-span-3">
+                            <label
+                              htmlFor="direct-zip-genre"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Estil Mizik
+                            </label>
+                            <input
+                              id="direct-zip-genre"
+                              type="text"
+                              value={zipGenreInput}
+                              onChange={(e) => setZipGenreInput(e.target.value)}
+                              placeholder="Folder VIP .ZIP"
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm text-[#F3F4F6] focus:border-[#10B981] focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            disabled={isProcessingFolder || !selectedZipFile}
+                            className="inline-flex items-center justify-center gap-2 min-h-[46px] px-6 py-2.5 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#0B1410] font-display font-extrabold text-xs sm:text-sm whitespace-nowrap shadow-lg transition-colors cursor-pointer"
+                          >
+                            <Upload className="h-4 w-4 shrink-0" />
+                            <span>
+                              {isProcessingFolder
+                                ? '⚡ Ap voye .ZIP la...'
+                                : '⚡ Voye .ZIP la & Pibliye Kounye a'}
+                            </span>
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {uploadMode === 'cloud_link' && (
+                      <form
+                        onSubmit={handlePublishCloudZipLink}
+                        className="rounded-2xl border border-amber-400/45 bg-[#1C1F24] p-5 space-y-4"
+                      >
+                        <div>
+                          <h5 className="font-display text-sm sm:text-base font-bold text-amber-300">
+                            🔗 Opsyon B — Kole Lyen Dirèk .ZIP (Google Drive / Dropbox / MediaFire / Mega)
+                          </h5>
+                          <p className="text-xs text-[#D1D5DB] mt-0.5">
+                            Pou gwo pake 500MB+ oswa 1GB+: pibliye nan <strong>1 segonn</strong> san
+                            okenn tan datant upload! Lyen Drive &amp; Dropbox konvèti otomatikman pou
+                            telechajman dirèk.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                          <div className="md:col-span-12">
+                            <label
+                              htmlFor="cloud-zip-url-input"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Lyen Dirèk .ZIP la (Google Drive, Dropbox, MediaFire, Mega, Supabase...)
+                            </label>
+                            <input
+                              id="cloud-zip-url-input"
+                              type="url"
+                              required
+                              value={cloudZipUrlInput}
+                              onChange={(e) => setCloudZipUrlInput(e.target.value)}
+                              placeholder="https://drive.google.com/file/d/... oswa https://www.dropbox.com/s/.../Pack.zip?dl=1"
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm font-mono text-[#F3F4F6] placeholder:text-[#9CA3AF] focus:border-amber-400 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="md:col-span-5">
+                            <label
+                              htmlFor="cloud-zip-name-input"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Non Folder la (Ex: RABODAY_DIFE🏆🍾🔥.zip)
+                            </label>
+                            <input
+                              id="cloud-zip-name-input"
+                              type="text"
+                              required
+                              value={cloudZipNameInput}
+                              onChange={(e) => setCloudZipNameInput(e.target.value)}
+                              placeholder="RABODAY_DIFE🏆🍾🔥.zip"
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm font-mono text-[#F3F4F6] placeholder:text-[#9CA3AF] focus:border-amber-400 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="md:col-span-2">
+                            <label
+                              htmlFor="cloud-zip-track-count"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Kantite Mizik
+                            </label>
+                            <input
+                              id="cloud-zip-track-count"
+                              type="number"
+                              min={1}
+                              value={cloudZipTrackCountInput}
+                              onChange={(e) => setCloudZipTrackCountInput(e.target.value)}
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm font-mono text-[#F3F4F6] focus:border-amber-400 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="md:col-span-2">
+                            <label
+                              htmlFor="cloud-zip-size"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Gwosè (Ex: 520 MB)
+                            </label>
+                            <input
+                              id="cloud-zip-size"
+                              type="text"
+                              value={cloudZipSizeInput}
+                              onChange={(e) => setCloudZipSizeInput(e.target.value)}
+                              placeholder="500 MB"
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm text-[#F3F4F6] focus:border-amber-400 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="md:col-span-3">
+                            <label
+                              htmlFor="cloud-zip-genre"
+                              className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                            >
+                              Estil Mizik
+                            </label>
+                            <input
+                              id="cloud-zip-genre"
+                              type="text"
+                              value={cloudZipGenreInput}
+                              onChange={(e) => setCloudZipGenreInput(e.target.value)}
+                              placeholder="Folder VIP .ZIP"
+                              className="w-full rounded-xl bg-[#262A30] border border-[#363B44] px-3.5 py-2.5 text-sm text-[#F3F4F6] focus:border-amber-400 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            disabled={isProcessingFolder}
+                            className="inline-flex items-center justify-center gap-2 min-h-[46px] px-6 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-[#1C1F24] font-display font-extrabold text-xs sm:text-sm whitespace-nowrap shadow-lg transition-colors cursor-pointer"
+                          >
+                            <Zap className="h-4 w-4 shrink-0" />
+                            <span>⚡ Pibliye Lyen .ZIP la nan 1 Segonn</span>
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {uploadMode === 'mp3_batch' && (
+                      <div
+                        onDragEnter={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDraggingFolder(true);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (!isDraggingFolder) setIsDraggingFolder(true);
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                          setIsDraggingFolder(false);
+                        }}
+                        onDrop={(e) => void handleFolderDrop(e)}
+                        className={`rounded-2xl border-2 border-dashed p-5 sm:p-6 space-y-4 transition-all ${
+                          isDraggingFolder
+                            ? 'border-emerald-400 bg-[#10B981]/20 shadow-[0_0_30px_rgba(16,185,129,0.2)]'
+                            : 'border-sky-400/55 bg-gradient-to-br from-sky-500/10 via-[#262A30] to-[#1C1F24] hover:border-emerald-400/80'
+                        }`}
+                      >
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                          <div className="flex items-start gap-4">
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-sky-500/20 border border-sky-400/40 text-sky-300">
+                              <FolderUp className="h-6 w-6" />
+                            </div>
+                            <div>
+                              <h4 className="font-display text-sm sm:text-base font-extrabold text-sky-300 tracking-tight">
+                                🎵 Opsyon C — Chwazi Plizyè Fichye .MP3 oswa Tout Yon Folder (10x Paralèl)
+                              </h4>
+                              <p className="text-xs text-[#D1D5DB] mt-1 leading-relaxed">
+                                Voye jiska 10 fichye <span className="font-mono text-emerald-300">.mp3</span>{' '}
+                                an menm tan ak non pwòp sou Supabase Storage, oswa glise tout yon
+                                folder dirèkteman isit la.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                            <input
+                              ref={multiMp3InputRef}
+                              id="admin-multi-mp3-input"
+                              type="file"
+                              multiple
+                              accept="audio/*,.mp3"
+                              onChange={handleMultiMp3PickerChange}
+                              className="hidden"
+                            />
+                            <label
+                              htmlFor="admin-multi-mp3-input"
+                              className={`inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-sky-400 hover:bg-sky-300 text-[#0B1410] font-display font-extrabold text-xs whitespace-nowrap shadow cursor-pointer transition-all ${
+                                isProcessingFolder ? 'opacity-60 pointer-events-none' : ''
+                              }`}
+                            >
+                              <Music className="h-4 w-4 shrink-0" />
+                              <span>🎵 Chwazi Plizyè .MP3</span>
+                            </label>
+
+                            <input
+                              ref={folderInputRef}
+                              id="admin-full-folder-input"
+                              type="file"
+                              multiple
+                              accept="audio/*"
+                              {...({
+                                webkitdirectory: '',
+                                directory: '',
+                              } as React.InputHTMLAttributes<HTMLInputElement>)}
+                              onChange={handleFolderPickerChange}
+                              className="hidden"
+                            />
+                            <label
+                              htmlFor="admin-full-folder-input"
+                              className={`inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-[#262A30] border border-[#10B981]/60 hover:bg-[#10B981]/15 text-emerald-300 font-display font-extrabold text-xs whitespace-nowrap shadow cursor-pointer transition-all ${
+                                isProcessingFolder ? 'opacity-60 pointer-events-none' : ''
+                              }`}
+                            >
+                              <FolderOpen className="h-4 w-4 shrink-0" />
+                              <span>
+                                {isProcessingFolder ? 'Ap Voye...' : '📁 1 Sèl Folder Laptop'}
+                              </span>
+                            </label>
+
+                            <label
+                              htmlFor="admin-multi-folder-input"
+                              className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-[#10B981] hover:brightness-110 text-[#0B1410] font-display font-extrabold text-xs whitespace-nowrap shadow cursor-pointer transition-all"
+                            >
+                              <FolderUp className="h-4 w-4 shrink-0" />
+                              <span>
+                                📂 CHWAZI PLIZYE FOLDER AN MENM TAN (Y ap monte youn apre lòt)
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="max-w-md">
+                          <label
+                            htmlFor="mp3-batch-folder-name"
+                            className="block text-[11px] font-semibold text-[#D1D5DB] mb-1"
+                          >
+                            Non Folder la (opsyonèl — si w chwazi fichye MP3 endividyèl):
+                          </label>
+                          <input
+                            id="mp3-batch-folder-name"
+                            type="text"
+                            value={mp3CustomFolderName}
+                            onChange={(e) => setMp3CustomFolderName(e.target.value)}
+                            placeholder="Ex: Konpa_Gouyad_2026.zip"
+                            className="w-full rounded-xl bg-[#1C1F24] border border-[#363B44] px-3 py-2 text-xs font-mono text-[#F3F4F6] placeholder:text-[#9CA3AF] focus:border-sky-400 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {folderQueue.length > 0 && (
+                  <div className="rounded-2xl bg-[#1C1F24] border border-amber-400/50 p-4 space-y-3 shadow-lg">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-[#363B44]">
+                      <div>
+                        <h5 className="font-display text-xs sm:text-sm font-extrabold text-amber-300 flex items-center gap-2">
+                          <FolderUp className="h-4 w-4 shrink-0" />
+                          <span>
+                            Queue Upload Otomatik ({folderQueue.filter((q) => q.status === 'done').length} /{' '}
+                            {folderQueue.length} Folder Fini)
+                          </span>
+                        </h5>
+                        <p className="text-[11px] text-[#9CA3AF] mt-0.5">
+                          Chak folder ap monte sou Supabase Storage epi pibliye sou sit la otomatikman youn
+                          apre lòt (1 ➔ 2 ➔ 3...).
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <label
+                          htmlFor="admin-multi-folder-input"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#10B981]/20 border border-[#10B981]/50 hover:bg-[#10B981]/30 text-emerald-300 font-bold text-[11px] cursor-pointer transition-colors"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>Ajoute Lòt Folder</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={clearCompletedFolderQueue}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#262A30] border border-[#363B44] hover:border-rose-400/50 text-[#D1D5DB] hover:text-rose-300 font-semibold text-[11px] cursor-pointer transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Netwaye Lis la</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                      {folderQueue.map((item, idx) => {
+                        const isUploading = item.status === 'uploading';
+                        const isDone = item.status === 'done';
+                        const isError = item.status === 'error';
+
+                        return (
+                          <div
+                            key={item.queueId}
+                            className={`rounded-xl border px-3.5 py-2.5 space-y-2 transition-colors ${
+                              isUploading
+                                ? 'bg-amber-500/10 border-amber-400/60'
+                                : isDone
+                                ? 'bg-[#10B981]/10 border-[#10B981]/45'
+                                : isError
+                                ? 'bg-rose-500/10 border-rose-500/45'
+                                : 'bg-[#262A30] border-[#363B44]'
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#1C1F24] border border-[#363B44] text-[10px] font-mono font-bold text-[#D1D5DB] shrink-0">
+                                  {idx + 1}
+                                </span>
+                                <span className="font-mono text-xs font-extrabold text-[#F3F4F6] truncate">
+                                  📁 {item.folderName}
+                                </span>
+                                <span className="text-[11px] text-[#9CA3AF] font-mono shrink-0">
+                                  ({item.totalCount} mizik
+                                  {item.fileSizeLabel ? ` • ${item.fileSizeLabel}` : ''})
+                                </span>
+                              </div>
+
+                              <span
+                                className={`text-[11px] font-extrabold font-mono shrink-0 ${
+                                  isUploading
+                                    ? 'text-amber-300'
+                                    : isDone
+                                    ? 'text-emerald-300'
+                                    : isError
+                                    ? 'text-rose-300'
+                                    : 'text-[#9CA3AF]'
+                                }`}
+                              >
+                                {isUploading
+                                  ? `⚡ Ap monte kounye a (${item.completedCount}/${item.totalCount})...`
+                                  : isDone
+                                  ? '✅ Fini!'
+                                  : isError
+                                  ? '❌ Erè'
+                                  : '⏳ Ap tann'}
+                              </span>
+                            </div>
+
+                            {(isUploading || isDone) && (
+                              <div className="h-1.5 w-full rounded-full bg-[#1C1F24] border border-[#363B44] overflow-hidden">
+                                <div
+                                  className={`h-full transition-all duration-300 ${
+                                    isDone
+                                      ? 'bg-[#10B981]'
+                                      : 'bg-gradient-to-r from-amber-400 to-[#10B981]'
+                                  }`}
+                                  style={{
+                                    width: `${isDone ? 100 : Math.max(4, item.percent)}%`,
+                                  }}
+                                />
+                              </div>
+                            )}
+
+                            {isError && item.errorMessage && (
+                              <p className="text-[11px] text-rose-300">{item.errorMessage}</p>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1530,7 +2856,25 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   </div>
                 )}
 
-                {folderProgressText && (
+                {folderUploadProgress && (
+                  <div className="rounded-xl bg-[#1C1F24] border border-[#10B981]/50 p-4 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 text-xs font-bold text-emerald-300">
+                      <span className="truncate">{folderUploadProgress.statusText}</span>
+                      <span className="font-mono tabular-nums shrink-0">
+                        {folderUploadProgress.current} / {folderUploadProgress.total} (
+                        {folderUploadProgress.percent}%)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-[#262A30] border border-[#363B44] overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-[#059669] to-[#10B981] transition-all duration-300"
+                        style={{ width: `${Math.max(4, folderUploadProgress.percent)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {!folderUploadProgress && folderProgressText && (
                   <div className="rounded-xl bg-[#1C1F24] border border-[#10B981]/35 px-4 py-2.5 text-xs font-medium text-emerald-300 flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 shrink-0 text-[#10B981]" />
                     <span>{folderProgressText}</span>
@@ -1598,6 +2942,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 multiple
                 accept="audio/*"
                 onChange={handleActivateFilesChange}
+                className="hidden"
+              />
+
+              {/* Hidden file input for appending additional MP3s into an existing folder (50 + 50 -> 100) */}
+              <input
+                ref={appendMp3InputRef}
+                type="file"
+                multiple
+                accept="audio/*,.mp3"
+                onChange={handleAppendFilesChange}
                 className="hidden"
               />
 
@@ -2618,6 +3972,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                         const isComingSoon = Boolean(pack.isComingSoon);
                         const isDownloading = packagingPackId === pack.id;
                         const isActivatingThis = isProcessingFolder && activatingPackId === pack.id;
+                        const isAppendingThis = isProcessingFolder && appendingPackId === pack.id;
 
                         return (
                           <div
@@ -2665,6 +4020,24 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                               </div>
                             </div>
 
+                            {isAppendingThis && folderUploadProgress && (
+                              <div className="rounded-lg bg-[#1C1F24] border border-sky-400/45 p-2.5 space-y-1.5">
+                                <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-sky-300">
+                                  <span className="truncate">{folderUploadProgress.statusText}</span>
+                                  <span className="font-mono tabular-nums shrink-0">
+                                    {folderUploadProgress.current}/{folderUploadProgress.total} (
+                                    {folderUploadProgress.percent}%)
+                                  </span>
+                                </div>
+                                <div className="h-1.5 w-full rounded-full bg-[#262A30] overflow-hidden">
+                                  <div
+                                    className="h-full bg-sky-400 transition-all duration-300"
+                                    style={{ width: `${Math.max(4, folderUploadProgress.percent)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+
                             <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#363B44]">
                               {isComingSoon ? (
                                 <button
@@ -2681,19 +4054,35 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                                   </span>
                                 </button>
                               ) : (
-                                <button
-                                  type="button"
-                                  disabled={isDownloading}
-                                  onClick={() => void onAdminFreeDownloadPack(pack)}
-                                  className="flex-1 inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 py-2 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-60 text-[#0B1410] text-xs font-bold whitespace-nowrap transition-colors cursor-pointer"
-                                >
-                                  <Download className="h-3.5 w-3.5 shrink-0" />
-                                  <span>
-                                    {isDownloading
-                                      ? 'Ap prepare .ZIP...'
-                                      : '⚡ Telechaje Gratis Admin'}
-                                  </span>
-                                </button>
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={isDownloading}
+                                    onClick={() => void onAdminFreeDownloadPack(pack)}
+                                    className="flex-1 inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 py-2 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-60 text-[#0B1410] text-xs font-bold whitespace-nowrap transition-colors cursor-pointer"
+                                  >
+                                    <Download className="h-3.5 w-3.5 shrink-0" />
+                                    <span>
+                                      {isDownloading
+                                        ? 'Ap prepare .ZIP...'
+                                        : '⚡ Telechaje Gratis Admin'}
+                                    </span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingFolder}
+                                    onClick={() => handleStartAppendMp3sToPack(pack.id)}
+                                    className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 py-2 rounded-xl bg-sky-500/15 border border-sky-400/50 hover:bg-sky-500/25 disabled:opacity-60 text-sky-200 text-xs font-extrabold whitespace-nowrap transition-colors cursor-pointer"
+                                  >
+                                    <Plus className="h-3.5 w-3.5 shrink-0" />
+                                    <span>
+                                      {isAppendingThis && folderUploadProgress
+                                        ? `⚡ ${folderUploadProgress.current}/${folderUploadProgress.total} (${folderUploadProgress.percent}%)`
+                                        : '➕ Ajoute Mizik'}
+                                    </span>
+                                  </button>
+                                </>
                               )}
 
                               <button

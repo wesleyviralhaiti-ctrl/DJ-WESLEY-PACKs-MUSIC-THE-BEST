@@ -115,19 +115,24 @@ export interface SupabasePackRequestRow {
 
 export interface SupabaseMusicPackRow {
   id: string;
-  slug: string;
-  title: string;
-  filename: string | null;
-  subtitle: string;
-  genre: string;
+  name?: string;
+  slug?: string;
+  title?: string;
+  filename?: string | null;
+  subtitle?: string;
+  genre?: string;
   track_count: number;
-  file_size: string;
-  bitrate: string;
-  bpm_range: string;
-  cover_image: string;
+  file_size?: string;
+  bitrate?: string;
+  bpm_range?: string;
+  cover_image?: string;
+  zip_url?: string | null;
   tracks: any;
-  is_custom_upload: boolean;
-  is_coming_soon: boolean;
-  created_at: number;
-  updated_at: number;
+  is_active?: boolean;
+  is_custom_upload?: boolean;
+  is_coming_soon?: boolean;
+  created_at?: number | string;
+  updated_at?: number | string;
 }
+
+export type SupabaseFolderRow = SupabaseMusicPackRow;
