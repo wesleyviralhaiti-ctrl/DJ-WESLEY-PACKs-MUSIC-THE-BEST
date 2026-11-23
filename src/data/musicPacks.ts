@@ -1753,9 +1753,13 @@ export function getAllMusicPacks(): MusicPack[] {
   const deletedSet = new Set(loadDeletedPackIds());
   const customPacks = loadCustomPacks().filter((p) => !deletedSet.has(p.id));
   const customIds = new Set(customPacks.map((p) => p.id));
+  const customTitles = new Set(customPacks.map((p) => p.title.trim().toLowerCase()));
   const baseCatalog = getLiveDefaultCatalog();
   const builtIn = baseCatalog.filter(
-    (p) => !deletedSet.has(p.id) && !customIds.has(p.id)
+    (p) =>
+      !deletedSet.has(p.id) &&
+      !customIds.has(p.id) &&
+      !customTitles.has(p.title.trim().toLowerCase())
   );
   return [...customPacks, ...builtIn];
 }
