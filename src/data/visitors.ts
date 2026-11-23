@@ -16,8 +16,11 @@ import {
 export const VISITOR_PROFILE_STORAGE_KEY = 'wesley_visitor_profile_v1';
 export const VISITOR_SESSION_ID_STORAGE_KEY = 'wesley_visitor_session_id_v1';
 export const VISITORS_CACHE_STORAGE_KEY = 'wesley_visitors_cache_v1';
+export const PENDING_REFERRAL_CODE_STORAGE_KEY = 'wesley_pending_referral_code_v1';
 export const VISITORS_UPDATED_EVENT = 'wesley-visitors-updated';
 export const VISITOR_ONLINE_WINDOW_MS = 30_000;
+export const REFERRAL_REGISTERED_GOAL = 15;
+export const REFERRAL_PURCHASED_GOAL = 5;
 
 export interface VisitorProfile {
   id: string;
@@ -26,6 +29,11 @@ export interface VisitorProfile {
   country: string;
   countryCode: string;
   phoneNumber: string;
+  referralCode: string;
+  referredBy?: string;
+  hasPurchased: boolean;
+  referralRewardClaimed: boolean;
+  bonusCredits: number;
   isOnline: boolean;
   lastSeenAt: number;
   createdAt: number;
@@ -234,6 +242,52 @@ function parseTimestampMs(value: string | number | null | undefined): number {
   return Date.now();
 }
 
+export function normalizePhoneDigits(raw: string | undefined | null): string {
+  return (raw || '').replace(/\D+/g, '');
+}
+
+const REFERRAL_CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+export function generateReferralCode6Char(existingCodes: Set<string> = new Set()): string {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    let suffix = '';
+    if (attempt < 15) {
+      suffix = String(Math.floor(100 + Math.random() * 900));
+    } else {
+      for (let i = 0; i < 3; i++) {
+        suffix += REFERRAL_CODE_CHARS[Math.floor(Math.random() * REFERRAL_CODE_CHARS.length)];
+      }
+    }
+    const candidate = `REF${suffix}`;
+    if (!existingCodes.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `REF${String(Math.floor(100 + Math.random() * 900))}`;
+}
+
+export function captureReferralCodeFromUrl(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const urlRef = params.get('ref');
+    if (urlRef) {
+      const cleaned = urlRef.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (cleaned.length >= 4 && cleaned.length <= 16) {
+        window.localStorage.setItem(PENDING_REFERRAL_CODE_STORAGE_KEY, cleaned);
+        return cleaned;
+      }
+    }
+    const saved = window.localStorage.getItem(PENDING_REFERRAL_CODE_STORAGE_KEY);
+    if (saved) {
+      const cleaned = saved.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      return cleaned.length >= 4 ? cleaned : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function loadSavedVisitorProfile(): VisitorProfile | null {
   try {
     const raw = window.localStorage.getItem(VISITOR_PROFILE_STORAGE_KEY);
@@ -243,17 +297,28 @@ export function loadSavedVisitorProfile(): VisitorProfile | null {
     if (!resolvedId || !parsed.fullName || !parsed.countryCode || !parsed.phoneNumber) {
       return null;
     }
-    return {
+    const referralCode =
+      (parsed.referralCode || '').trim().toUpperCase() || generateReferralCode6Char();
+    const profile: VisitorProfile = {
       id: resolvedId,
       sessionId: resolvedId,
       fullName: parsed.fullName,
       country: parsed.country || getCountryByCode(parsed.countryCode).name,
       countryCode: parsed.countryCode.toUpperCase(),
       phoneNumber: parsed.phoneNumber,
+      referralCode,
+      referredBy: parsed.referredBy ? parsed.referredBy.trim().toUpperCase() : undefined,
+      hasPurchased: Boolean(parsed.hasPurchased),
+      referralRewardClaimed: Boolean(parsed.referralRewardClaimed),
+      bonusCredits: Math.max(0, Number(parsed.bonusCredits) || 0),
       isOnline: parsed.isOnline ?? true,
       lastSeenAt: parseTimestampMs(parsed.lastSeenAt),
       createdAt: parseTimestampMs(parsed.createdAt),
     };
+    if (!parsed.referralCode) {
+      window.localStorage.setItem(VISITOR_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    }
+    return profile;
   } catch {
     return null;
   }
@@ -287,9 +352,21 @@ export function loadVisitorsCache(): VisitorProfile[] {
   }
 }
 
-function mapSupabaseVisitorRow(row: SupabaseVisitorRow): VisitorProfile {
+function mapSupabaseVisitorRow(
+  row: SupabaseVisitorRow,
+  fallback?: { referralCode?: string; referredBy?: string }
+): VisitorProfile {
   const resolvedId = String(row.session_id || row.id || generateSessionId());
   const lastSeenMs = parseTimestampMs(row.last_seen_at);
+  const referralCode =
+    (row.referral_code || '').trim().toUpperCase() ||
+    (fallback?.referralCode || '').trim().toUpperCase() ||
+    generateReferralCode6Char();
+  const referredByRaw = row.referred_by
+    ? String(row.referred_by).trim().toUpperCase()
+    : fallback?.referredBy
+      ? fallback.referredBy.trim().toUpperCase()
+      : undefined;
   return {
     id: resolvedId,
     sessionId: resolvedId,
@@ -297,6 +374,11 @@ function mapSupabaseVisitorRow(row: SupabaseVisitorRow): VisitorProfile {
     country: row.country,
     countryCode: (row.country_code || 'HT').toUpperCase(),
     phoneNumber: row.phone_number,
+    referralCode,
+    referredBy: referredByRaw || undefined,
+    hasPurchased: Boolean(row.has_purchased),
+    referralRewardClaimed: Boolean(row.referral_reward_claimed),
+    bonusCredits: Math.max(0, Number(row.bonus_credits) || 0),
     isOnline: row.is_online !== false,
     lastSeenAt: lastSeenMs,
     createdAt: row.created_at !== undefined ? parseTimestampMs(row.created_at) : lastSeenMs,
@@ -308,22 +390,33 @@ export function isVisitorCurrentlyOnline(visitor: VisitorProfile, nowMs = Date.n
   return nowMs - visitor.lastSeenAt <= VISITOR_ONLINE_WINDOW_MS;
 }
 
-async function upsertVisitorRowToSupabase(visitor: VisitorProfile): Promise<{
+async function upsertVisitorRowToSupabase(
+  visitor: VisitorProfile,
+  options: { includeReferralMutationFields?: boolean } = {}
+): Promise<{
   data: SupabaseVisitorRow | null;
   error: { message: string; code?: string } | null;
 }> {
   const isoNow = new Date().toISOString();
 
-  // Primary upsert format requested:
-  // { session_id, full_name, country, country_code, phone_number, last_seen_at: new Date().toISOString() }
-  const primaryPayload = {
+  const primaryPayload: Record<string, unknown> = {
     session_id: visitor.sessionId,
     full_name: visitor.fullName,
     country: visitor.country,
     country_code: visitor.countryCode,
     phone_number: visitor.phoneNumber,
+    referral_code: visitor.referralCode,
     last_seen_at: isoNow,
   };
+
+  if (options.includeReferralMutationFields) {
+    if (visitor.referredBy) {
+      primaryPayload.referred_by = visitor.referredBy;
+    }
+    primaryPayload.has_purchased = visitor.hasPurchased;
+    primaryPayload.referral_reward_claimed = visitor.referralRewardClaimed;
+    primaryPayload.bonus_credits = visitor.bonusCredits;
+  }
 
   const primaryRes = await supabaseClient
     .from('visitors')
@@ -337,6 +430,33 @@ async function upsertVisitorRowToSupabase(visitor: VisitorProfile): Promise<{
 
   const errCode = primaryRes.error.code || '';
   const errMsg = primaryRes.error.message || '';
+
+  // If referral columns are not yet present in remote schema, retry core upsert so visitor registration still succeeds
+  if (
+    errCode === '42703' ||
+    errCode === 'PGRST204' ||
+    /referral_code|referred_by|has_purchased|referral_reward_claimed|bonus_credits/i.test(errMsg)
+  ) {
+    const coreRes = await supabaseClient
+      .from('visitors')
+      .upsert(
+        {
+          session_id: visitor.sessionId,
+          full_name: visitor.fullName,
+          country: visitor.country,
+          country_code: visitor.countryCode,
+          phone_number: visitor.phoneNumber,
+          last_seen_at: isoNow,
+        },
+        { onConflict: 'session_id' }
+      )
+      .select('*')
+      .maybeSingle();
+
+    if (!coreRes.error) {
+      return { data: (coreRes.data as SupabaseVisitorRow | null) ?? null, error: null };
+    }
+  }
 
   // Fallback compatibility if the remote visitors table uses `id` / `bigint` instead of `session_id` / `timestamptz`
   if (
@@ -411,6 +531,63 @@ export async function registerOrUpdateVisitorRemote(input: {
 
   const existing = loadSavedVisitorProfile();
   const sessionId = existing?.sessionId || getOrCreateVisitorSessionId();
+  const existingCodes = new Set(
+    loadVisitorsCache()
+      .map((v) => v.referralCode?.toUpperCase())
+      .filter((c): c is string => Boolean(c))
+  );
+  const referralCode = existing?.referralCode || generateReferralCode6Char(existingCodes);
+  const myPhoneDigits = normalizePhoneDigits(phoneCheck.formattedE164 || phoneCheck.formattedInternational);
+
+  // Anti-cheat referral attribution check
+  let resolvedReferredBy: string | undefined = existing?.referredBy;
+  if (!resolvedReferredBy) {
+    const pendingRef = captureReferralCodeFromUrl();
+    if (pendingRef && pendingRef !== referralCode) {
+      let allowReferral = true;
+
+      // Check local cache for self-referral
+      const cachedReferrer = loadVisitorsCache().find(
+        (v) => v.referralCode?.toUpperCase() === pendingRef
+      );
+      if (
+        cachedReferrer &&
+        (cachedReferrer.sessionId === sessionId ||
+          normalizePhoneDigits(cachedReferrer.phoneNumber) === myPhoneDigits)
+      ) {
+        allowReferral = false;
+      }
+
+      // Check Supabase visitors table for self-referral by phone_number or session_id
+      if (allowReferral) {
+        try {
+          const { data: referrerRow } = await supabaseClient
+            .from('visitors')
+            .select('session_id, phone_number, referral_code')
+            .eq('referral_code', pendingRef)
+            .maybeSingle();
+
+          if (referrerRow) {
+            const refRow = referrerRow as Partial<SupabaseVisitorRow>;
+            const refPhoneDigits = normalizePhoneDigits(refRow.phone_number);
+            if (
+              refRow.session_id === sessionId ||
+              (myPhoneDigits && refPhoneDigits && refPhoneDigits === myPhoneDigits)
+            ) {
+              allowReferral = false;
+            }
+          }
+        } catch {
+          // Proceed cleanly if offline
+        }
+      }
+
+      if (allowReferral) {
+        resolvedReferredBy = pendingRef;
+      }
+    }
+  }
+
   const now = Date.now();
   const visitor: VisitorProfile = {
     id: sessionId,
@@ -419,6 +596,11 @@ export async function registerOrUpdateVisitorRemote(input: {
     country: country.name,
     countryCode: country.code,
     phoneNumber: phoneCheck.formattedInternational,
+    referralCode,
+    referredBy: resolvedReferredBy,
+    hasPurchased: existing?.hasPurchased ?? false,
+    referralRewardClaimed: existing?.referralRewardClaimed ?? false,
+    bonusCredits: existing?.bonusCredits ?? 0,
     isOnline: true,
     lastSeenAt: now,
     createdAt: existing?.createdAt || now,
@@ -427,10 +609,15 @@ export async function registerOrUpdateVisitorRemote(input: {
   saveVisitorProfileLocally(visitor);
 
   try {
-    const { data, error } = await upsertVisitorRowToSupabase(visitor);
+    const { data, error } = await upsertVisitorRowToSupabase(visitor, {
+      includeReferralMutationFields: true,
+    });
     if (!error) {
       if (data) {
         const synced = mapSupabaseVisitorRow(data);
+        // Preserve referralCode/referredBy if remote schema didn't return them yet
+        if (!data.referral_code) synced.referralCode = visitor.referralCode;
+        if (!data.referred_by && visitor.referredBy) synced.referredBy = visitor.referredBy;
         saveVisitorProfileLocally(synced);
         return { success: true, visitor: synced, remoteSynced: true };
       }
@@ -452,7 +639,7 @@ export async function registerOrUpdateVisitorRemote(input: {
 export async function sendVisitorHeartbeatRemote(
   profile: VisitorProfile,
   overrideCountryCode?: string
-): Promise<void> {
+): Promise<VisitorProfile | null> {
   const now = Date.now();
   const country = overrideCountryCode
     ? getCountryByCode(overrideCountryCode)
@@ -471,12 +658,28 @@ export async function sendVisitorHeartbeatRemote(
   saveVisitorProfileLocally(updated);
 
   try {
-    const { error } = await upsertVisitorRowToSupabase(updated);
+    const { data, error } = await upsertVisitorRowToSupabase(updated, {
+      includeReferralMutationFields: false,
+    });
     if (error) {
       console.warn('[Supabase visitors heartbeat]', error.code, error.message);
+      return null;
     }
+    if (data) {
+      const synced = mapSupabaseVisitorRow(data);
+      if (!data.referral_code && profile.referralCode) {
+        synced.referralCode = profile.referralCode;
+      }
+      if (!data.referred_by && profile.referredBy) {
+        synced.referredBy = profile.referredBy;
+      }
+      saveVisitorProfileLocally(synced);
+      return synced;
+    }
+    return updated;
   } catch {
     // ignore transient heartbeat failure
+    return null;
   }
 }
 
@@ -527,7 +730,9 @@ export async function fetchVisitorsFromSupabaseDirect(): Promise<FetchVisitorsRe
       };
     }
 
-    const mapped = ((data as SupabaseVisitorRow[] | null) ?? []).map(mapSupabaseVisitorRow);
+    const mapped = ((data as SupabaseVisitorRow[] | null) ?? []).map((row) =>
+      mapSupabaseVisitorRow(row)
+    );
     try {
       window.localStorage.setItem(VISITORS_CACHE_STORAGE_KEY, JSON.stringify(mapped));
     } catch {
@@ -589,4 +794,296 @@ export function subscribeVisitorsRealtime(onChange: () => void): () => void {
   return () => {
     void supabaseClient.removeChannel(channel);
   };
+}
+
+// ============================================================================
+// VIRAL REFERRAL TRACKING, ANTI-CHEAT DEDUPLICATION & BONUS FOLDER CREDITS
+// ============================================================================
+
+export interface ReferralStats {
+  registeredCount: number;
+  purchasedCount: number;
+}
+
+export interface ReferralProgressResult extends ReferralStats {
+  connected: boolean;
+  ownProfile?: VisitorProfile;
+  errorMessage?: string;
+}
+
+function countUniqueReferralsForOwner(
+  referredRows: VisitorProfile[],
+  ownerSessionId?: string,
+  ownerPhone?: string
+): ReferralStats {
+  const ownerPhoneDigits = normalizePhoneDigits(ownerPhone);
+  const uniqueByPhone = new Map<string, { hasPurchased: boolean }>();
+
+  for (const row of referredRows) {
+    if (ownerSessionId && row.sessionId === ownerSessionId) continue;
+    const digits = normalizePhoneDigits(row.phoneNumber);
+    if (ownerPhoneDigits && digits && digits === ownerPhoneDigits) continue;
+
+    const dedupeKey = digits || row.sessionId;
+    const existing = uniqueByPhone.get(dedupeKey);
+    if (!existing) {
+      uniqueByPhone.set(dedupeKey, { hasPurchased: Boolean(row.hasPurchased) });
+    } else if (row.hasPurchased && !existing.hasPurchased) {
+      existing.hasPurchased = true;
+    }
+  }
+
+  let registeredCount = 0;
+  let purchasedCount = 0;
+  for (const entry of uniqueByPhone.values()) {
+    registeredCount += 1;
+    if (entry.hasPurchased) purchasedCount += 1;
+  }
+
+  return { registeredCount, purchasedCount };
+}
+
+export function computeReferralStatsByCode(
+  allVisitors: VisitorProfile[]
+): Record<string, ReferralStats> {
+  const result: Record<string, ReferralStats> = {};
+  const byReferredCode = new Map<string, VisitorProfile[]>();
+
+  for (const v of allVisitors) {
+    if (!v.referredBy) continue;
+    const refCode = v.referredBy.trim().toUpperCase();
+    if (!refCode) continue;
+    const bucket = byReferredCode.get(refCode) ?? [];
+    bucket.push(v);
+    byReferredCode.set(refCode, bucket);
+  }
+
+  for (const owner of allVisitors) {
+    const code = owner.referralCode?.trim().toUpperCase();
+    if (!code) continue;
+    const referredRows = byReferredCode.get(code) ?? [];
+    result[code] = countUniqueReferralsForOwner(
+      referredRows,
+      owner.sessionId,
+      owner.phoneNumber
+    );
+  }
+
+  return result;
+}
+
+export async function fetchReferralProgressRemote(
+  visitor: VisitorProfile
+): Promise<ReferralProgressResult> {
+  const refCode = (visitor.referralCode || '').trim().toUpperCase();
+  if (!refCode) {
+    return { registeredCount: 0, purchasedCount: 0, connected: false };
+  }
+
+  try {
+    const [referredRes, ownRes] = await Promise.all([
+      supabaseClient.from('visitors').select('*').eq('referred_by', refCode),
+      supabaseClient.from('visitors').select('*').eq('session_id', visitor.sessionId).maybeSingle(),
+    ]);
+
+    if (referredRes.error) {
+      return {
+        registeredCount: 0,
+        purchasedCount: 0,
+        connected: false,
+        errorMessage: referredRes.error.message,
+      };
+    }
+
+    const mappedReferred = ((referredRes.data as SupabaseVisitorRow[] | null) ?? []).map((row) =>
+      mapSupabaseVisitorRow(row)
+    );
+    const stats = countUniqueReferralsForOwner(
+      mappedReferred,
+      visitor.sessionId,
+      visitor.phoneNumber
+    );
+
+    let ownProfile: VisitorProfile | undefined;
+    if (!ownRes.error && ownRes.data) {
+      ownProfile = mapSupabaseVisitorRow(ownRes.data as SupabaseVisitorRow, {
+        referralCode: visitor.referralCode,
+        referredBy: visitor.referredBy,
+      });
+      saveVisitorProfileLocally(ownProfile);
+    }
+
+    return {
+      registeredCount: stats.registeredCount,
+      purchasedCount: stats.purchasedCount,
+      connected: true,
+      ownProfile,
+    };
+  } catch (err: any) {
+    return {
+      registeredCount: 0,
+      purchasedCount: 0,
+      connected: false,
+      errorMessage: err?.message || 'Echèk koneksyon ak Supabase',
+    };
+  }
+}
+
+export async function markCurrentVisitorPurchasedRemote(): Promise<VisitorProfile | null> {
+  const current = loadSavedVisitorProfile();
+  if (!current) return null;
+
+  const updatedLocal: VisitorProfile = {
+    ...current,
+    hasPurchased: true,
+  };
+  saveVisitorProfileLocally(updatedLocal);
+
+  try {
+    const { data, error } = await supabaseClient
+      .from('visitors')
+      .update({
+        has_purchased: true,
+        last_seen_at: new Date().toISOString(),
+      })
+      .eq('session_id', current.sessionId)
+      .select('*')
+      .maybeSingle();
+
+    if (!error && data) {
+      const synced = mapSupabaseVisitorRow(data as SupabaseVisitorRow, {
+        referralCode: current.referralCode,
+        referredBy: current.referredBy,
+      });
+      saveVisitorProfileLocally(synced);
+      return synced;
+    }
+  } catch {
+    // ignore transient error
+  }
+
+  return updatedLocal;
+}
+
+export async function claimReferralRewardRemote(visitor: VisitorProfile): Promise<{
+  success: boolean;
+  visitor?: VisitorProfile;
+  error?: string;
+}> {
+  const progress = await fetchReferralProgressRemote(visitor);
+  if (!progress.connected) {
+    return {
+      success: false,
+      error:
+        progress.errorMessage ||
+        '⚠️ Pa kapab verifye pwogrè pataj ou sou Supabase kounye a. Eseye ankò.',
+    };
+  }
+
+  const latestSelf = progress.ownProfile ?? visitor;
+  if (latestSelf.referralRewardClaimed) {
+    return {
+      success: false,
+      visitor: latestSelf,
+      error: '✅ Ou deja reklame rekonpans 1 Folder Gratis ou a!',
+    };
+  }
+
+  if (
+    progress.registeredCount < REFERRAL_REGISTERED_GOAL ||
+    progress.purchasedCount < REFERRAL_PURCHASED_GOAL
+  ) {
+    return {
+      success: false,
+      visitor: latestSelf,
+      error: `🔒 Kondisyon yo poko konplè (${progress.registeredCount}/${REFERRAL_REGISTERED_GOAL} Enskri · ${progress.purchasedCount}/${REFERRAL_PURCHASED_GOAL} Kliyan VIP).`,
+    };
+  }
+
+  const nextBonus = Math.max(0, latestSelf.bonusCredits) + 1;
+
+  try {
+    const { data, error } = await supabaseClient
+      .from('visitors')
+      .update({
+        referral_reward_claimed: true,
+        bonus_credits: nextBonus,
+        last_seen_at: new Date().toISOString(),
+      })
+      .eq('session_id', latestSelf.sessionId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      return {
+        success: false,
+        error: `⚠️ Erè Supabase (${error?.code || 'UPDATE'}): ${
+          error?.message || 'Pa kapab ajoute kredi gratis la kounye a.'
+        }`,
+      };
+    }
+
+    const updated = mapSupabaseVisitorRow(data as SupabaseVisitorRow, {
+      referralCode: latestSelf.referralCode,
+      referredBy: latestSelf.referredBy,
+    });
+    saveVisitorProfileLocally(updated);
+    return { success: true, visitor: updated };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `⚠️ Erè koneksyon ak Supabase: ${err?.message || 'Eseye ankò.'}`,
+    };
+  }
+}
+
+export async function consumeVisitorBonusCreditRemote(
+  visitor: VisitorProfile
+): Promise<{ success: boolean; visitor: VisitorProfile }> {
+  const currentBonus = Math.max(0, visitor.bonusCredits);
+  const nextBonus = Math.max(0, currentBonus - 1);
+
+  try {
+    const { data: freshRow } = await supabaseClient
+      .from('visitors')
+      .select('*')
+      .eq('session_id', visitor.sessionId)
+      .maybeSingle();
+
+    const authoritativeBonus = freshRow
+      ? Math.max(0, Number((freshRow as SupabaseVisitorRow).bonus_credits) || 0)
+      : currentBonus;
+
+    if (authoritativeBonus <= 0) {
+      const zeroVisitor: VisitorProfile = { ...visitor, bonusCredits: 0 };
+      saveVisitorProfileLocally(zeroVisitor);
+      return { success: false, visitor: zeroVisitor };
+    }
+
+    const decremented = Math.max(0, authoritativeBonus - 1);
+    const { data, error } = await supabaseClient
+      .from('visitors')
+      .update({
+        bonus_credits: decremented,
+        last_seen_at: new Date().toISOString(),
+      })
+      .eq('session_id', visitor.sessionId)
+      .select('*')
+      .maybeSingle();
+
+    if (!error && data) {
+      const synced = mapSupabaseVisitorRow(data as SupabaseVisitorRow, {
+        referralCode: visitor.referralCode,
+        referredBy: visitor.referredBy,
+      });
+      saveVisitorProfileLocally(synced);
+      return { success: true, visitor: synced };
+    }
+  } catch {
+    // Fallback cleanly below
+  }
+
+  const fallbackVisitor: VisitorProfile = { ...visitor, bonusCredits: nextBonus };
+  saveVisitorProfileLocally(fallbackVisitor);
+  return { success: true, visitor: fallbackVisitor };
 }

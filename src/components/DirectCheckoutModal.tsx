@@ -630,7 +630,7 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
                     setNatcashSmsInput(e.target.value);
                     if (formError) setFormError(null);
                   }}
-                  placeholder="Egzanp SMS Natcash: Ou transfere 500 HTG bay +50956568810. ID Transaksyon: NC9482710583. Nouvo balans ou se..."
+                  placeholder="Kole tout mesaj konfimasyon Natcash ou resevwa a isit la (ki gen montan HTG, +509 56568810, ak Transcode la)..."
                   className="w-full rounded-xl bg-[#1C1F24] border border-[#363B44] px-3.5 py-2.5 text-xs sm:text-sm font-mono text-[#F3F4F6] placeholder:font-sans placeholder:text-[#9CA3AF] focus:border-[#10B981] focus:outline-none leading-relaxed resize-y min-h-[104px]"
                 />
               </div>

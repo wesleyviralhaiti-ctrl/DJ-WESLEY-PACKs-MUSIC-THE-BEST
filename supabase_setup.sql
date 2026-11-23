@@ -258,21 +258,33 @@ begin
 end;
 $$;
 
--- 9B. VISITORS & LIVE ONLINE PRESENCE TABLE
+-- 9B. VISITORS & LIVE ONLINE PRESENCE + REFERRAL PROGRAM TABLE
 create table if not exists public.visitors (
   session_id text primary key,
   full_name text not null,
   country text not null,
   country_code text not null,
   phone_number text not null,
+  referral_code text unique,
+  referred_by text,
+  has_purchased boolean not null default false,
+  referral_reward_claimed boolean not null default false,
+  bonus_credits integer not null default 0 check (bonus_credits >= 0),
   is_online boolean not null default true,
   last_seen_at timestamptz not null default now(),
   created_at timestamptz not null default now()
 );
 
--- Ensure session_id & grants exist even if table was created earlier
+-- Ensure session_id, referral columns & indexes exist even if table was created earlier
 alter table public.visitors add column if not exists session_id text;
+alter table public.visitors add column if not exists referral_code text;
+alter table public.visitors add column if not exists referred_by text;
+alter table public.visitors add column if not exists has_purchased boolean not null default false;
+alter table public.visitors add column if not exists referral_reward_claimed boolean not null default false;
+alter table public.visitors add column if not exists bonus_credits integer not null default 0;
 create unique index if not exists idx_visitors_session_id on public.visitors (session_id);
+create unique index if not exists idx_visitors_referral_code on public.visitors (referral_code);
+create index if not exists idx_visitors_referred_by on public.visitors (referred_by);
 create index if not exists idx_visitors_last_seen on public.visitors (last_seen_at desc);
 create index if not exists idx_visitors_online on public.visitors (is_online, last_seen_at desc);
 

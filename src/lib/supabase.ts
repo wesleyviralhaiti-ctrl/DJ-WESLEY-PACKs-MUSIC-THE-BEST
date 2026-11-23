@@ -90,6 +90,11 @@ export interface SupabaseVisitorRow {
   country: string;
   country_code: string;
   phone_number: string;
+  referral_code?: string | null;
+  referred_by?: string | null;
+  has_purchased?: boolean;
+  referral_reward_claimed?: boolean;
+  bonus_credits?: number;
   is_online?: boolean;
   last_seen_at: string | number;
   created_at?: string | number;

@@ -12,6 +12,7 @@ import {
   SupabaseNatcashReceiptRow,
   SupabasePaymentRow,
 } from '../lib/supabase';
+import { markCurrentVisitorPurchasedRemote } from './visitors';
 
 export const NATCASH_MERCHANT_NUMBER = '+509 56568810';
 export const USDT_TRC20_WALLET_ADDRESS = 'TDdBs9ivYbUjXmXh3PQT85nKKEf9bsjbxQ';
@@ -273,13 +274,13 @@ function parseHtgAmountToken(rawNum: string): number {
 }
 
 /**
- * Parses a full official Natcash confirmation SMS pasted by the buyer and enforces all 4 checks:
- *  1. Authentic Natcash transfer phrasing (Natcash / transfere / voye / HTG / Gourdes / ID / Ref)
- *  2. Exact recipient number 56568810 (accepts 56568810, 50956568810, +50956568810, spaced/dashed)
- *  3. Transferred amount >= expectedHtg (ignores remaining account balance / fees)
- *  4. Extracts unique valid Transaction ID / Reference (blocks junk / recipient number masquerading as ID)
+ * Hardened 4-point Natcash SMS Receipt Parser (`verifyNatcashPayment`):
+ *  1. Secret Recipient Full Name Check (case-insensitive, any order — NEVER shown on UI)
+ *  2. Exact Recipient Phone Check: 56568810 (with or without +509 / 509)
+ *  3. Exact Transfer Amount Check: amount right after "transfere" must match exact selected plan HTG
+ *  4. Unique Transcode Extraction: `Transcode:\s*([A-Za-z0-9]{10,20})`
  */
-export function parseNatcashConfirmationSms(
+export function verifyNatcashPayment(
   rawSms: string,
   expectedHtg: number
 ): NatcashSmsParseResult {
@@ -297,33 +298,24 @@ export function parseNatcashConfirmationSms(
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
 
-  // Rule 1: Official Natcash Keywords
-  const hasNatcashBrand = /\bnatcash\b/.test(asciiNorm);
-  const hasTransferVerb =
-    /\b(transfere|transfert|transfer|voye|envoye|sent|reyisi|reussi|effectue|konfime|confirme|peye|paid)\b/.test(
-      asciiNorm
-    );
-  const hasCurrency = /\b(htg|gourdes?|goud|gds)\b/.test(asciiNorm);
-  const hasRefKeyword =
-    /\b(id|transaksyon|tranzaksyon|transaction|txid|tx|ref|referans|reference|kod|code)\b/.test(
-      asciiNorm
-    );
+  // Check 1 (Secret Name): Must contain all three secret recipient name parts (any order, case-insensitive).
+  // CRITICAL: Never expose this name in any UI text or error message.
+  const hasSecretNameParts =
+    /\bseraphin\b/i.test(asciiNorm) &&
+    /\bjohn\b/i.test(asciiNorm) &&
+    /\bwesley\b/i.test(asciiNorm);
 
-  if (!hasCurrency || !hasRefKeyword || (!hasNatcashBrand && !hasTransferVerb)) {
+  if (!hasSecretNameParts) {
     return {
       valid: false,
       error:
-        '❌ Mesaj sa a pa sanble yon vrè SMS konfimasyon Natcash! Kole tout mesaj ofisyèl la (ki gen Natcash, transfere/voye, HTG/Gourdes, +509 56568810, ak ID/Ref).',
+        '❌ Erè Verifikasyon: Mesaj SMS sa a pa koresponn ak yon vrè transfè sou kont Natcash ofisyèl la.',
     };
   }
 
-  // Rule 2: Exact Recipient Number Check (56568810 / 50956568810 / +50956568810)
-  const phoneRegex = /(?<!\d)(?:\+?\s*509[\s.-]?)?\d(?:[\s.-]?\d){7}(?!\d)/g;
-  const phoneMatches = trimmed.match(phoneRegex) || [];
-  const recipientMatched = phoneMatches.some((candidate) => {
-    const digits = candidate.replace(/\D+/g, '');
-    return digits === '56568810' || digits === '50956568810';
-  });
+  // Check 2 (Phone): Must contain 56568810 (with or without 509 / +509)
+  const recipientMatched =
+    /(?:^|[^\d])(?:\+?\s*\(?\s*509\s*\)?[\s.-]?)?5656[\s.-]?8810(?:$|[^\d])/.test(trimmed);
 
   if (!recipientMatched) {
     return {
@@ -333,83 +325,77 @@ export function parseNatcashConfirmationSms(
     };
   }
 
-  // Rule 3: Exact Plan Amount Check (exclude balance/fee values so remaining balance can't pass)
-  const amountRegex = /(\d[\d.,\s]{0,14}\d|\d{2,6})\s*(?:htg|gourdes?|goud|gds)\b/gi;
-  let sentAmount: number | null = null;
-  let priorityTransferAmount: number | null = null;
+  // Check 3 (Exact Amount): Amount immediately after "transfere" must match the exact selected plan
+  const transferAmountMatch = asciiNorm.match(
+    /\b(?:transfere|transfert|transfer)\s+(?:de\s+|montan\s+)?([0-9][0-9.,\s]{0,12}[0-9]|[0-9]{1,6})\s*(?:htg|gourdes?|goud|gds)\b/i
+  );
 
-  let match: RegExpExecArray | null;
-  while ((match = amountRegex.exec(asciiNorm)) !== null) {
-    const parsedVal = parseHtgAmountToken(match[1]);
-    if (!Number.isFinite(parsedVal) || parsedVal <= 0) continue;
-
-    const beforeSnippet = asciiNorm.slice(Math.max(0, match.index - 38), match.index);
-    const isBalanceOrFee =
-      /\b(balans|solde|balance|nouvo|nouveau|disponib|available|fre|frais|fee|reste|remaining)\b/.test(
-        beforeSnippet
-      );
-
-    if (isBalanceOrFee) continue;
-
-    const isExplicitTransferPhrase =
-      /\b(transfere|transfert|transfer|voye|envoye|sent|montan|amount|peye|paid|de)\b/.test(
-        beforeSnippet
-      );
-
-    if (isExplicitTransferPhrase && priorityTransferAmount === null) {
-      priorityTransferAmount = parsedVal;
-    }
-    if (sentAmount === null) {
-      sentAmount = parsedVal;
-    }
-  }
-
-  const finalSentAmount = priorityTransferAmount ?? sentAmount;
-  if (finalSentAmount === null || finalSentAmount < expectedHtg) {
+  if (!transferAmountMatch || !transferAmountMatch[1]) {
     return {
       valid: false,
       recipientMatched: true,
-      amountHtg: finalSentAmount ?? 0,
-      error: '❌ Montan ki nan mesaj la pa ase pou plan sa a!',
+      error:
+        '❌ Montan transfè a pa jwenn aprè "transfere" nan mesaj SMS Natcash la!',
     };
   }
 
-  // Rule 4: Automatic Transaction ID Extraction
-  const txLabelRegex =
-    /(?:\bid\s*(?:transaksyon|tranzaksyon|transaction|de\s*transaction)?|transaksyon\s*(?:id|no|#)?|tranzaksyon\s*(?:id|no|#)?|transaction\s*(?:id|no|#)?|tx\s*id|txid|ref(?:erans|erence)?|kod\s*(?:transaksyon)?|code\s*(?:transaction)?)\s*(?::|#|=|-|\bis\b|\bse\b|\best\b)?\s*([A-Za-z0-9][A-Za-z0-9-]{5,24})/gi;
-
-  let extractedTxId: string | null = null;
-  let txMatch: RegExpExecArray | null;
-  while ((txMatch = txLabelRegex.exec(trimmed)) !== null) {
-    const rawCandidate = (txMatch[1] || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (!rawCandidate) continue;
-    if (rawCandidate === '56568810' || rawCandidate === '50956568810') continue;
-    if (/^(?:NATCASH|TRANSFERT|TRANSFER|GOURDES|TRANSAKSYON|TRANSACTION)$/.test(rawCandidate)) {
-      continue;
-    }
-    const txCheck = validateNatcashTransactionFormat(rawCandidate);
-    if (txCheck.valid && txCheck.normalized) {
-      extractedTxId = txCheck.normalized;
-      break;
-    }
-  }
-
-  if (!extractedTxId) {
+  const transferredAmount = parseHtgAmountToken(transferAmountMatch[1]);
+  if (
+    !Number.isFinite(transferredAmount) ||
+    transferredAmount <= 0 ||
+    Math.abs(transferredAmount - expectedHtg) > 0.01
+  ) {
     return {
       valid: false,
       recipientMatched: true,
-      amountHtg: finalSentAmount,
+      amountHtg: Number.isFinite(transferredAmount) ? transferredAmount : 0,
+      error: `❌ Montan ki nan mesaj la (${
+        Number.isFinite(transferredAmount) ? `${transferredAmount.toLocaleString('en-US')} HTG` : '0 HTG'
+      }) pa koresponn egzakteman ak plan ou chwazi a (${expectedHtg.toLocaleString('en-US')} HTG)!`,
+    };
+  }
+
+  // Check 4 (Unique Transcode): Extract Transcode:\s*([A-Za-z0-9]{10,20})
+  const transcodeMatch = trimmed.match(/Transcode\s*:\s*([A-Za-z0-9]{10,20})\b/i);
+  if (!transcodeMatch || !transcodeMatch[1]) {
+    return {
+      valid: false,
+      recipientMatched: true,
+      amountHtg: transferredAmount,
       error:
-        '❌ Nou pa jwenn okenn ID Transaksyon / Ref valid nan mesaj la! Asire w tout mesaj konfimasyon Natcash la kole nèt.',
+        '❌ Nou pa jwenn okenn Transcode valid (10–20 karaktè) nan mesaj la! Asire w tout SMS konfimasyon Natcash la kole nèt ak "Transcode: ...".',
+    };
+  }
+
+  const extractedTranscode = transcodeMatch[1].trim().toUpperCase();
+  if (
+    extractedTranscode === '56568810' ||
+    extractedTranscode === '50956568810' ||
+    /(.)\1{5,}/.test(extractedTranscode) ||
+    OBVIOUS_SEQUENTIAL_PATTERNS.some((seq) => extractedTranscode.includes(seq))
+  ) {
+    return {
+      valid: false,
+      recipientMatched: true,
+      amountHtg: transferredAmount,
+      error:
+        '❌ Transcode ki nan mesaj SMS sa a pa valab! Verifye vrè mesaj konfimasyon Natcash ou a.',
     };
   }
 
   return {
     valid: true,
-    transactionId: extractedTxId,
-    amountHtg: finalSentAmount,
+    transactionId: extractedTranscode,
+    amountHtg: transferredAmount,
     recipientMatched: true,
   };
+}
+
+export function parseNatcashConfirmationSms(
+  rawSms: string,
+  expectedHtg: number
+): NatcashSmsParseResult {
+  return verifyNatcashPayment(rawSms, expectedHtg);
 }
 
 // ============================================================================
@@ -492,22 +478,56 @@ function tronAddressesMatch(a: string | undefined | null, b: string | undefined 
 // REPLAY / DUPLICATE CHECK AGAINST SUPABASE `used_transactions` + `payments`
 // ============================================================================
 
-export async function isTransactionAlreadyUsedRemote(rawTxId: string): Promise<boolean> {
+export async function checkTransactionUniquenessRemote(rawTxId: string): Promise<{
+  alreadyUsed: boolean;
+  verificationFailed?: boolean;
+  error?: string;
+}> {
   const normTx = rawTxId.trim().toUpperCase();
-  if (!normTx) return false;
+  if (!normTx) return { alreadyUsed: false };
 
   if (loadLocalUsedTransactions().has(normTx)) {
-    return true;
+    return { alreadyUsed: true };
   }
 
-  const localApproved = loadPaymentOrders().some(
-    (o) => o.status === 'approved' && o.transactionId.trim().toUpperCase() === normTx
+  const localUsed = loadPaymentOrders().some(
+    (o) => o.status !== 'rejected' && o.transactionId.trim().toUpperCase() === normTx
   );
-  if (localApproved) {
+  if (localUsed) {
     rememberLocalUsedTransaction(normTx);
-    return true;
+    return { alreadyUsed: true };
   }
 
+  // Primary anti-replay check directly against Supabase `payments` table
+  try {
+    const { data: paidRows, error: paymentsError } = await supabase
+      .from('payments')
+      .select('id, status, transaction_id')
+      .ilike('transaction_id', normTx)
+      .neq('status', 'rejected')
+      .limit(5);
+
+    if (paymentsError) {
+      return {
+        alreadyUsed: false,
+        verificationFailed: true,
+        error: `⚠️ Erè verifikasyon Supabase (${paymentsError.code || 'SQL'}): Pa kapab verifye si Transcode sa a deja itilize.`,
+      };
+    }
+
+    if (Array.isArray(paidRows) && paidRows.length > 0) {
+      rememberLocalUsedTransaction(normTx);
+      return { alreadyUsed: true };
+    }
+  } catch {
+    return {
+      alreadyUsed: false,
+      verificationFailed: true,
+      error: '⚠️ Pa kapab konekte ak Supabase pou verifye Transcode la. Verifye entènèt ou epi eseye ankò.',
+    };
+  }
+
+  // Secondary check on `used_transactions` if table exists
   try {
     const { data: usedRow } = await supabase
       .from('used_transactions')
@@ -517,29 +537,18 @@ export async function isTransactionAlreadyUsedRemote(rawTxId: string): Promise<b
 
     if (usedRow) {
       rememberLocalUsedTransaction(normTx);
-      return true;
+      return { alreadyUsed: true };
     }
   } catch {
-    // Continue to payments check cleanly
+    // Optional table may not exist on all deployments
   }
 
-  try {
-    const { data: paidRows } = await supabase
-      .from('payments')
-      .select('id, status')
-      .ilike('transaction_id', normTx)
-      .eq('status', 'approved')
-      .limit(1);
+  return { alreadyUsed: false };
+}
 
-    if (Array.isArray(paidRows) && paidRows.length > 0) {
-      rememberLocalUsedTransaction(normTx);
-      return true;
-    }
-  } catch {
-    // Ignore network error
-  }
-
-  return false;
+export async function isTransactionAlreadyUsedRemote(rawTxId: string): Promise<boolean> {
+  const check = await checkTransactionUniquenessRemote(rawTxId);
+  return check.alreadyUsed;
 }
 
 export async function markTransactionUsedRemote(params: {
@@ -1352,6 +1361,7 @@ export async function submitAndVerifyUsdtPaymentRemote(input: {
 
   upsertLocalPaymentOrderCache(approvedOrder);
   saveActiveCheckoutOrderId(approvedOrder.id);
+  void markCurrentVisitorPurchasedRemote();
 
   try {
     const { data, error } = await supabase
@@ -1495,6 +1505,7 @@ async function tryClaimNatcashSmsReceipt(params: {
 
     upsertLocalPaymentOrderCache(approvedOrder);
     saveActiveCheckoutOrderId(approvedOrder.id);
+    void markCurrentVisitorPurchasedRemote();
 
     if (params.existingOrderId) {
       await supabase
@@ -1637,8 +1648,8 @@ export async function submitAndVerifyNatcashSmsRemote(input: {
     cleanBuyerPhone = phoneCheck.normalized;
   }
 
-  // Run all 4 strict SMS parser checks
-  const parsed = parseNatcashConfirmationSms(input.rawSms, expectedHtg);
+  // Run all 4 strict anti-fraud SMS parser checks (Secret Name, Phone 56568810, Exact Amount, Unique Transcode)
+  const parsed = verifyNatcashPayment(input.rawSms, expectedHtg);
   if (!parsed.valid || !parsed.transactionId) {
     return {
       status: 'error',
@@ -1651,12 +1662,20 @@ export async function submitAndVerifyNatcashSmsRemote(input: {
   const extractedTx = parsed.transactionId;
   const paidHtg = parsed.amountHtg ?? expectedHtg;
 
-  // Check Supabase `used_transactions` & approved `payments` for reuse
-  const alreadyUsed = await isTransactionAlreadyUsedRemote(extractedTx);
-  if (alreadyUsed) {
+  // Check Supabase `payments` (and `used_transactions`) so the same Transcode can NEVER be used twice
+  const uniquenessCheck = await checkTransactionUniquenessRemote(extractedTx);
+  if (uniquenessCheck.verificationFailed) {
     return {
       status: 'error',
-      error: `🚫 Kòd Tranzaksyon Natcash (${extractedTx}) sa a deja itilize anvan!`,
+      error:
+        uniquenessCheck.error ??
+        '⚠️ Pa kapab verifye Transcode la nan Supabase kounye a. Eseye ankò.',
+    };
+  }
+  if (uniquenessCheck.alreadyUsed) {
+    return {
+      status: 'error',
+      error: `🚫 Transcode Natcash (${extractedTx}) sa a deja itilize anvan! Chak Transcode valab pou yon sèl itilizasyon sèlman.`,
     };
   }
 
@@ -1765,6 +1784,7 @@ export async function submitAndVerifyNatcashSmsRemote(input: {
 
   upsertLocalPaymentOrderCache(approvedOrder);
   saveActiveCheckoutOrderId(approvedOrder.id);
+  void markCurrentVisitorPurchasedRemote();
 
   try {
     const { data, error } = await supabase

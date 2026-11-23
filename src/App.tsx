@@ -33,6 +33,7 @@ import { AdminPanelModal } from './components/AdminPanelModal';
 import { QuotaExhaustedModal } from './components/QuotaExhaustedModal';
 import { DirectCheckoutModal } from './components/DirectCheckoutModal';
 import { VisitorEntryGateModal } from './components/VisitorEntryGateModal';
+import { ReferralProgramCard } from './components/ReferralProgramCard';
 import { ZipFilenameText } from './components/ZipFilenameText';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { CountrySelector } from './components/CountrySelector';
@@ -48,7 +49,10 @@ import {
 } from './data/packRequests';
 import {
   VisitorProfile,
+  captureReferralCodeFromUrl,
+  consumeVisitorBonusCreditRemote,
   loadSavedVisitorProfile,
+  markCurrentVisitorPurchasedRemote,
   markVisitorOfflineKeepalive,
   sendVisitorHeartbeatRemote,
 } from './data/visitors';
@@ -135,19 +139,30 @@ export default function App() {
     [visitorProfile]
   );
 
+  // Capture ?ref=CODE referral parameter from URL immediately on arrival
+  useEffect(() => {
+    captureReferralCodeFromUrl();
+  }, []);
+
   // Real-time online presence heartbeat every 15 seconds + offline keepalive on tab close
   useEffect(() => {
     if (!visitorProfile) return;
 
-    void sendVisitorHeartbeatRemote(visitorProfile, selectedCountryCode);
+    void sendVisitorHeartbeatRemote(visitorProfile, selectedCountryCode).then((synced) => {
+      if (synced) setVisitorProfile(synced);
+    });
 
     const intervalId = window.setInterval(() => {
-      void sendVisitorHeartbeatRemote(visitorProfile, selectedCountryCode);
+      void sendVisitorHeartbeatRemote(visitorProfile, selectedCountryCode).then((synced) => {
+        if (synced) setVisitorProfile(synced);
+      });
     }, 15_000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void sendVisitorHeartbeatRemote(visitorProfile, selectedCountryCode);
+        void sendVisitorHeartbeatRemote(visitorProfile, selectedCountryCode).then((synced) => {
+          if (synced) setVisitorProfile(synced);
+        });
       }
     };
 
@@ -291,6 +306,9 @@ export default function App() {
         setIsDirectCheckoutOpen(true);
         // Mark as surfaced so closing the modal won't forcefully re-open it later
         saveActiveCheckoutOrderId(null);
+        void markCurrentVisitorPurchasedRemote().then((updated) => {
+          if (updated) setVisitorProfile(updated);
+        });
       }
     };
 
@@ -344,6 +362,9 @@ export default function App() {
     (record: VipKeyRecord) => {
       window.localStorage.setItem(ACTIVE_KEY_STORAGE_KEY, record.code);
       setActiveKey(record);
+      void markCurrentVisitorPurchasedRemote().then((updated) => {
+        if (updated) setVisitorProfile(updated);
+      });
       showToast(
         record.isUnlimited || record.totalFolders >= 999
           ? '👑 Aksè VIP Ilimite debloke pou tout katalòg la!'
@@ -472,6 +493,26 @@ export default function App() {
         return;
       }
 
+      const activeKeyUsable = Boolean(
+        activeKey &&
+          (activeKey.isUnlimited ||
+            activeKey.totalFolders >= 999 ||
+            (!activeKey.burned && activeKey.remainingFolders > 0))
+      );
+      const hasBonusToSpend = Boolean(visitorProfile && visitorProfile.bonusCredits > 0);
+
+      // If no active VIP key credits remain, allow spending a Referral Bonus Folder Credit
+      if (!activeKeyUsable && hasBonusToSpend && visitorProfile) {
+        const dlResult = await triggerZipDownload(pack);
+        if (!dlResult.success) {
+          return;
+        }
+        const bonusRes = await consumeVisitorBonusCreditRemote(visitorProfile);
+        setVisitorProfile(bonusRes.visitor);
+        showToast(`🎁 1 Kredi Folder Gratis itilize! Pake "${pack.title}" telechaje!`);
+        return;
+      }
+
       if (!activeKey) {
         setPendingPack(pack);
         setIsWelcomeOpen(true);
@@ -520,6 +561,7 @@ export default function App() {
     },
     [
       activeKey,
+      visitorProfile,
       handleAdminFreeDownloadPack,
       handleExhaustedAttempt,
       isAdminAuthenticated,
@@ -536,7 +578,10 @@ export default function App() {
         activeKey.totalFolders >= 999 ||
         (!activeKey.burned && activeKey.remainingFolders > 0))
   );
-  const isUnlockedForDownload = Boolean((isAdminAuthenticated && isAdminFreeMode) || hasRemainingCredits);
+  const hasBonusCredits = Boolean(visitorProfile && visitorProfile.bonusCredits > 0);
+  const isUnlockedForDownload = Boolean(
+    (isAdminAuthenticated && isAdminFreeMode) || hasRemainingCredits || hasBonusCredits
+  );
 
   return (
     <div className="min-h-[100dvh] pb-[env(safe-area-inset-bottom)] bg-[#1C1F24] text-[#F3F4F6] flex flex-col">
@@ -716,6 +761,24 @@ export default function App() {
         </div>
       )}
 
+      {/* Bonus Free Folder Credit Banner from Viral Referral Program */}
+      {!hasRemainingCredits && hasBonusCredits && !isAdminFreeMode && (
+        <div className="border-b border-[#10B981]/35 bg-[#10B981]/10">
+          <div className="mx-auto flex flex-wrap items-center justify-between gap-3 max-w-6xl px-4 sm:px-6 py-2.5 text-xs sm:text-sm">
+            <span className="font-semibold text-emerald-200 tabular-nums">
+              🎁 Ou gen {visitorProfile?.bonusCredits} Kredi Folder Gratis (Rekonpans Pataj) —
+              Klike &quot;⬇️ TELECHAJE .ZIP&quot; sou nenpòt folder!
+            </span>
+            <a
+              href="#pake-mizik"
+              className="inline-flex items-center gap-1.5 text-xs font-extrabold text-[#10B981] hover:text-emerald-200 underline underline-offset-4"
+            >
+              Chwazi Folder Ou
+            </a>
+          </div>
+        </div>
+      )}
+
       <main id="top" className="flex-1">
         {/* Hero Section (Clean Text Header without large banner image) */}
         <section className="border-b border-[#363B44]">
@@ -784,6 +847,15 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {/* Viral Referral Program Card ("🎁 PATAJE & GANYEN 1 FOLDER GRATIS") */}
+        {visitorProfile && (
+          <ReferralProgramCard
+            visitor={visitorProfile}
+            onVisitorUpdated={setVisitorProfile}
+            onRewardClaimedToast={showToast}
+          />
+        )}
 
         {/* Clean .ZIP Folder Compact Aligned Rows */}
         <section id="pake-mizik" className="py-12 sm:py-16 border-b border-[#363B44]">

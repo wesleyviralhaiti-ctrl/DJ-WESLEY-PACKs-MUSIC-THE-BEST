@@ -86,6 +86,9 @@ import {
   VisitorProfile,
   VISITORS_CACHE_STORAGE_KEY,
   VISITORS_UPDATED_EVENT,
+  REFERRAL_PURCHASED_GOAL,
+  REFERRAL_REGISTERED_GOAL,
+  computeReferralStatsByCode,
   deleteVisitorRecordRemote,
   fetchVisitorsFromSupabaseDirect,
   isVisitorCurrentlyOnline,
@@ -423,6 +426,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const onlineVisitorsCount = useMemo(
     () => visitors.filter((v) => isVisitorCurrentlyOnline(v, onlineNowMs)).length,
     [visitors, onlineNowMs]
+  );
+
+  const referralStatsMap = useMemo(
+    () => computeReferralStatsByCode(visitors),
+    [visitors]
   );
 
   const filteredVisitors = useMemo(() => {
@@ -2187,6 +2195,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                         {filteredVisitors.map((visitor) => {
                           const online = isVisitorCurrentlyOnline(visitor, onlineNowMs);
                           const country = getCountryByCode(visitor.countryCode);
+                          const refStats = referralStatsMap[visitor.referralCode] ?? {
+                            registeredCount: 0,
+                            purchasedCount: 0,
+                          };
 
                           return (
                             <div
@@ -2210,6 +2222,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                                       <span aria-hidden="true">{online ? '🟢' : '🔴'}</span>
                                       <span>{online ? 'Online' : 'Offline'}</span>
                                     </span>
+                                    {visitor.hasPurchased && (
+                                      <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-extrabold bg-amber-500/20 border border-amber-400/45 text-amber-300">
+                                        💳 Kliyan VIP
+                                      </span>
+                                    )}
                                     <span className="text-[11px] text-[#9CA3AF]">
                                       {new Date(visitor.lastSeenAt).toLocaleString()}
                                     </span>
@@ -2239,7 +2256,26 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                                 </button>
                               </div>
 
-                              <div className="mt-3 flex items-center justify-between gap-2 rounded-lg bg-[#262A30] border border-[#363B44] px-3 py-2">
+                              {/* Referral Stats Row */}
+                              <div className="mt-3 rounded-lg bg-[#262A30]/75 border border-[#363B44] px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono font-bold text-[#F3F4F6]">
+                                    Kòd: {visitor.referralCode}
+                                  </span>
+                                  {visitor.referredBy && (
+                                    <span className="text-[#9CA3AF] font-mono">
+                                      · Parèn: {visitor.referredBy}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="font-mono font-bold text-emerald-300 tabular-nums">
+                                  🎁 Enskri: {refStats.registeredCount}/{REFERRAL_REGISTERED_GOAL} • Achte:{' '}
+                                  {refStats.purchasedCount}/{REFERRAL_PURCHASED_GOAL}
+                                  {visitor.bonusCredits > 0 ? ` (+${visitor.bonusCredits} Gratis)` : ''}
+                                </span>
+                              </div>
+
+                              <div className="mt-2.5 flex items-center justify-between gap-2 rounded-lg bg-[#262A30] border border-[#363B44] px-3 py-2">
                                 <div className="min-w-0">
                                   <span className="block text-[10px] text-[#9CA3AF]">
                                     Nimewo Telefòn Verifye
