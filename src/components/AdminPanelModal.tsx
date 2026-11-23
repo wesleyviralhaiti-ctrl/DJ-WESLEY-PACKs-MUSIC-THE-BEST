@@ -33,6 +33,7 @@ import {
   Zap,
   Music,
   Megaphone,
+  Disc3,
 } from 'lucide-react';
 import {
   COMING_SOON_GENRE_PRESETS,
@@ -104,6 +105,15 @@ import {
   publishSiteAnnouncementRemote,
   subscribeSiteAnnouncementRealtime,
 } from '../data/siteAnnouncement';
+import {
+  DEFAULT_VIRTUALDJ_BONUS,
+  VirtualDjBonusConfig,
+  clearVirtualDjBonusRemote,
+  fetchVirtualDjBonusRemote,
+  loadLocalVirtualDjBonus,
+  publishVirtualDjBonusRemote,
+  subscribeVirtualDjBonusRealtime,
+} from '../data/virtualDjBonus';
 import {
   VisitorProfile,
   VISITORS_CACHE_STORAGE_KEY,
@@ -370,6 +380,29 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [showSiteSettingsSql, setShowSiteSettingsSql] = useState<boolean>(false);
   const [copiedSiteSettingsSql, setCopiedSiteSettingsSql] = useState<boolean>(false);
 
+  // VirtualDJ Gratis Bonus Manager ("🎧 Jere Kado VirtualDJ Gratis")
+  const [liveVirtualDjBonus, setLiveVirtualDjBonus] = useState<VirtualDjBonusConfig>(() =>
+    loadLocalVirtualDjBonus()
+  );
+  const [vdjTitleInput, setVdjTitleInput] = useState<string>(
+    () => loadLocalVirtualDjBonus().title || DEFAULT_VIRTUALDJ_BONUS.title
+  );
+  const [vdjUrlInput, setVdjUrlInput] = useState<string>(
+    () => loadLocalVirtualDjBonus().downloadUrl
+  );
+  const [vdjSizeInput, setVdjSizeInput] = useState<string>(
+    () => loadLocalVirtualDjBonus().fileSize
+  );
+  const [isSavingVdj, setIsSavingVdj] = useState<boolean>(false);
+  const [isUploadingVdjFile, setIsUploadingVdjFile] = useState<boolean>(false);
+  const [vdjUploadPercent, setVdjUploadPercent] = useState<number>(0);
+  const [vdjFeedback, setVdjFeedback] = useState<{
+    text: string;
+    variant: 'success' | 'info' | 'warning';
+  } | null>(null);
+  const [vdjMissingTable, setVdjMissingTable] = useState<boolean>(false);
+  const vdjFileInputRef = useRef<HTMLInputElement | null>(null);
+
   const syncVisitorsFromSupabase = async () => {
     const res = await fetchVisitorsFromSupabaseDirect();
     setVisitors(res.visitors);
@@ -451,6 +484,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
         setAnnouncementInput(res.announcement.message);
         setAnnouncementMissingTable(res.missingTable);
       });
+      void fetchVirtualDjBonusRemote().then((res) => {
+        setLiveVirtualDjBonus(res.bonus);
+        setVdjTitleInput(res.bonus.title || DEFAULT_VIRTUALDJ_BONUS.title);
+        setVdjUrlInput(res.bonus.downloadUrl);
+        setVdjSizeInput(res.bonus.fileSize);
+        setVdjMissingTable(res.missingTable);
+      });
     }
     if (!isOpen) {
       setIsDraggingFolder(false);
@@ -459,9 +499,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || !isAuthenticated) return;
-    return subscribeSiteAnnouncementRealtime((updated) => {
+    const unsubAnn = subscribeSiteAnnouncementRealtime((updated) => {
       setLiveAnnouncement(updated);
     });
+    const unsubVdj = subscribeVirtualDjBonusRealtime((updated) => {
+      setLiveVirtualDjBonus(updated);
+    });
+    return () => {
+      unsubAnn();
+      unsubVdj();
+    };
   }, [isOpen, isAuthenticated]);
 
   // Keep payment orders, VIP keys, live visitors & pack requests synced directly with Supabase every 5s
@@ -1183,6 +1230,130 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
       xhr.send(formData);
     });
+  };
+
+  const uploadVirtualDjInstallerWithProgress = (
+    storagePath: string,
+    file: File,
+    onProgress: (percent: number) => void
+  ): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const cleanPath = storagePath
+        .split('/')
+        .map((seg) => encodeURIComponent(seg))
+        .join('/');
+      const uploadEndpoint = `${SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/music-packs/${cleanPath}`;
+
+      const formData = new FormData();
+      formData.append('cacheControl', '3600');
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'VirtualDJ_Installer.zip';
+      const sanitizedFile = new File([file], safeName, {
+        type: file.type || 'application/octet-stream',
+      });
+      formData.append('', sanitizedFile);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', uploadEndpoint, true);
+      xhr.setRequestHeader('apikey', SUPABASE_ANON_KEY);
+      xhr.setRequestHeader('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+      xhr.setRequestHeader('x-upsert', 'true');
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress(Math.min(98, Math.round((event.loaded / event.total) * 98)));
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress(100);
+          resolve();
+          return;
+        }
+        let serverMessage = `HTTP ${xhr.status}`;
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          serverMessage = parsed?.message || parsed?.error || serverMessage;
+        } catch {
+          if (xhr.responseText) serverMessage = xhr.responseText.slice(0, 140);
+        }
+        if (
+          xhr.status === 413 ||
+          serverMessage.toLowerCase().includes('maximum allowed size') ||
+          serverMessage.toLowerCase().includes('payload too large')
+        ) {
+          reject(
+            new Error(
+              `Fichye sa a (${(file.size / (1024 * 1024)).toFixed(1)} MB) depase limit gwosè Supabase Storage la. Mete l sou Google Drive oswa MediaFire epi kole lyen dirèk la anba a!`
+            )
+          );
+          return;
+        }
+        reject(
+          new Error(
+            `Echèk upload VirtualDJ sou Supabase Storage (${serverMessage}). Kole yon lyen dirèk Google Drive / MediaFire anba a pito.`
+          )
+        );
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Erè rezo pandan upload fichye VirtualDJ la.'));
+      };
+
+      xhr.send(formData);
+    });
+  };
+
+  const handleVirtualDjFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setVdjFeedback(null);
+    setIsUploadingVdjFile(true);
+    setVdjUploadPercent(1);
+
+    const sizeMbLabel = `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+    setVdjSizeInput(sizeMbLabel);
+
+    const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'VirtualDJ_Installer.exe';
+    const storagePath = `virtualdj-bonus/${Date.now()}_${safeFileName}`;
+
+    try {
+      await uploadVirtualDjInstallerWithProgress(storagePath, file, (pct) => {
+        setVdjUploadPercent(pct);
+      });
+      const { data: urlData } = supabase.storage
+        .from('music-packs')
+        .getPublicUrl(storagePath);
+      const publicUrl = urlData?.publicUrl || '';
+      if (!publicUrl) {
+        throw new Error('Pa kapab jenere lyen piblik pou fichye a.');
+      }
+
+      setVdjUrlInput(publicUrl);
+      const savedRes = await publishVirtualDjBonusRemote({
+        title: vdjTitleInput.trim() || DEFAULT_VIRTUALDJ_BONUS.title,
+        downloadUrl: publicUrl,
+        fileSize: sizeMbLabel,
+      });
+      setLiveVirtualDjBonus(savedRes.bonus);
+      setVdjMissingTable(savedRes.missingTable);
+      setVdjFeedback({
+        text: savedRes.savedToSupabase
+          ? `✅ Fichye ${file.name} (${sizeMbLabel}) upload epi pibliye sou sit la ak Supabase!`
+          : `✅ Fichye ${file.name} (${sizeMbLabel}) upload epi pibliye sou sit la!`,
+        variant: 'success',
+      });
+    } catch (err: any) {
+      setVdjFeedback({
+        text: `⚠️ ${err?.message || 'Pa kapab upload fichye VirtualDJ la.'}`,
+        variant: 'warning',
+      });
+    } finally {
+      setIsUploadingVdjFile(false);
+      if (vdjFileInputRef.current) {
+        vdjFileInputRef.current.value = '';
+      }
+    }
   };
 
   const handleDirectZipFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2351,6 +2522,285 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     </div>
                   )}
                 </div>
+              </div>
+              )}
+
+              {/* 🎧 JERE KADO VIRTUALDJ GRATIS (Pou Plan ≥ 1,000 HTG / 20 USD+) */}
+              {activeTab === 'packs' && (
+              <div className="rounded-2xl border border-[#10B981]/40 bg-gradient-to-br from-[#0B261E] via-[#1B2226] to-[#202429] p-5 sm:p-6 space-y-4 shadow-[0_8px_28px_rgba(16,185,129,0.08)]">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#10B981]/25 pb-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#10B981]/20 border border-[#10B981]/45 text-[#10B981]">
+                      <Disc3 className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-base sm:text-lg font-bold text-[#F3F4F6]">
+                        🎧 Jere Kado VirtualDJ Gratis
+                      </h3>
+                      <p className="text-xs text-[#D1D5DB]">
+                        Debloke otomatikman pou tout kliyan ki pran plan ≥ 1,000 HTG (oubyen ≥ 20 USD / 20 EUR).
+                      </p>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`inline-flex items-center gap-1.5 self-start sm:self-center rounded-xl px-3 py-1.5 text-xs font-bold border ${
+                      liveVirtualDjBonus.isActive && liveVirtualDjBonus.downloadUrl
+                        ? 'bg-[#10B981]/20 border-[#10B981]/45 text-emerald-300'
+                        : liveVirtualDjBonus.isActive
+                          ? 'bg-amber-500/15 border-amber-400/40 text-amber-200'
+                          : 'bg-[#1C1F24] border-[#363B44] text-[#9CA3AF]'
+                    }`}
+                  >
+                    {liveVirtualDjBonus.isActive && liveVirtualDjBonus.downloadUrl
+                      ? '🟢 Lyen VirtualDJ Aktif'
+                      : liveVirtualDjBonus.isActive
+                        ? '⏳ Poko Gen Lyen Fichye'
+                        : '⚪ Kado VirtualDJ Retire'}
+                  </span>
+                </div>
+
+                {liveVirtualDjBonus.isActive && liveVirtualDjBonus.downloadUrl && (
+                  <div className="rounded-xl border border-[#10B981]/40 bg-[#08241A] px-4 py-2.5 text-xs sm:text-sm text-emerald-200 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span aria-hidden="true">🎧</span>
+                      <span className="font-bold truncate">{liveVirtualDjBonus.title}</span>
+                      {liveVirtualDjBonus.fileSize && (
+                        <span className="font-mono text-xs text-emerald-300/80">
+                          ({liveVirtualDjBonus.fileSize})
+                        </span>
+                      )}
+                    </div>
+                    <a
+                      href={liveVirtualDjBonus.downloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-bold text-emerald-300 hover:text-emerald-200 underline underline-offset-2 shrink-0"
+                    >
+                      <span>Teste Lyen an</span>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="md:col-span-2">
+                    <label
+                      htmlFor="vdj-title-input"
+                      className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                    >
+                      Tit / Nòt Vèsyon VirtualDJ la
+                    </label>
+                    <input
+                      id="vdj-title-input"
+                      type="text"
+                      value={vdjTitleInput}
+                      onChange={(e) => {
+                        setVdjTitleInput(e.target.value);
+                        if (vdjFeedback) setVdjFeedback(null);
+                      }}
+                      placeholder="VirtualDJ Pro PC/Mac — Bonus VIP"
+                      className="w-full rounded-xl border border-[#363B44] bg-[#1C1F24] px-3.5 py-2.5 text-sm text-[#F3F4F6] placeholder-[#9CA3AF] focus:border-[#10B981] focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="vdj-size-input"
+                      className="block text-xs font-semibold text-[#D1D5DB] mb-1.5"
+                    >
+                      Gwosè Fichye (opsyonèl)
+                    </label>
+                    <input
+                      id="vdj-size-input"
+                      type="text"
+                      value={vdjSizeInput}
+                      onChange={(e) => setVdjSizeInput(e.target.value)}
+                      placeholder="Ex: 380 MB"
+                      className="w-full rounded-xl border border-[#363B44] bg-[#1C1F24] px-3.5 py-2.5 text-sm font-mono text-[#F3F4F6] placeholder:font-sans placeholder-[#9CA3AF] focus:border-[#10B981] focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Upload Installer File directly OR Paste External Direct Link */}
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label
+                      htmlFor="vdj-url-input"
+                      className="block text-xs font-semibold text-[#D1D5DB]"
+                    >
+                      Lyen Dirèk VirtualDJ (Google Drive / MediaFire / Dropbox / Supabase URL)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={vdjFileInputRef}
+                        type="file"
+                        accept=".exe,.msi,.dmg,.pkg,.zip,.rar,.7z"
+                        onChange={(e) => void handleVirtualDjFilePicked(e)}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        disabled={isUploadingVdjFile || isSavingVdj}
+                        onClick={() => vdjFileInputRef.current?.click()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#10B981]/15 border border-[#10B981]/45 hover:bg-[#10B981]/25 disabled:opacity-60 text-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        <span>
+                          {isUploadingVdjFile
+                            ? `Ap upload (${vdjUploadPercent}%)...`
+                            : '📤 Upload Fichye Enstalatè VirtualDJ'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {isUploadingVdjFile && (
+                    <div className="w-full h-2.5 rounded-full bg-[#1C1F24] border border-[#363B44] overflow-hidden">
+                      <div
+                        className="h-full bg-[#10B981] transition-all duration-200"
+                        style={{ width: `${Math.max(4, vdjUploadPercent)}%` }}
+                      />
+                    </div>
+                  )}
+
+                  <input
+                    id="vdj-url-input"
+                    type="url"
+                    value={vdjUrlInput}
+                    onChange={(e) => {
+                      setVdjUrlInput(e.target.value);
+                      if (vdjFeedback) setVdjFeedback(null);
+                    }}
+                    placeholder="https://drive.google.com/file/d/... oubyen https://mediafire.com/..."
+                    className="w-full rounded-xl border border-[#363B44] bg-[#1C1F24] px-3.5 py-2.5 text-xs sm:text-sm font-mono text-[#F3F4F6] placeholder:font-sans placeholder-[#9CA3AF] focus:border-[#10B981] focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    disabled={isSavingVdj || isUploadingVdjFile}
+                    onClick={async () => {
+                      const cleanUrl = normalizeDirectZipUrl(vdjUrlInput);
+                      if (!cleanUrl || (!cleanUrl.startsWith('https://') && !cleanUrl.startsWith('http://'))) {
+                        setVdjFeedback({
+                          text: '⚠️ Upload fichye VirtualDJ la oubyen kole yon lyen https:// valid anvan ou sove.',
+                          variant: 'warning',
+                        });
+                        return;
+                      }
+                      setIsSavingVdj(true);
+                      setVdjFeedback(null);
+                      try {
+                        const res = await publishVirtualDjBonusRemote({
+                          title: vdjTitleInput.trim() || DEFAULT_VIRTUALDJ_BONUS.title,
+                          downloadUrl: cleanUrl,
+                          fileSize: vdjSizeInput.trim(),
+                        });
+                        setLiveVirtualDjBonus(res.bonus);
+                        setVdjUrlInput(res.bonus.downloadUrl);
+                        setVdjMissingTable(res.missingTable);
+                        setVdjFeedback({
+                          text: res.savedToSupabase
+                            ? '✅ Kado VirtualDJ Gratis la pibliye sou sit la epi sove nan Supabase!'
+                            : '✅ Kado VirtualDJ Gratis la pibliye imedyatman sou sit la (sovgad lokal aktif)!',
+                          variant: 'success',
+                        });
+                      } finally {
+                        setIsSavingVdj(false);
+                      }
+                    }}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#10B981] hover:bg-[#059669] disabled:opacity-60 text-[#0B1410] text-xs sm:text-sm font-extrabold transition-colors cursor-pointer"
+                  >
+                    <span>
+                      {isSavingVdj ? 'Ap sove...' : '💾 Pibliye / Mete Ajou Kado VirtualDJ'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSavingVdj || isUploadingVdjFile}
+                    onClick={async () => {
+                      setIsSavingVdj(true);
+                      setVdjFeedback(null);
+                      try {
+                        const res = await clearVirtualDjBonusRemote();
+                        setLiveVirtualDjBonus(res.bonus);
+                        setVdjUrlInput('');
+                        setVdjSizeInput('');
+                        setVdjMissingTable(res.missingTable);
+                        setVdjFeedback({
+                          text: '🗑️ Kado VirtualDJ la retire sou sit la nan 1 klik.',
+                          variant: 'info',
+                        });
+                      } finally {
+                        setIsSavingVdj(false);
+                      }
+                    }}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 hover:bg-rose-500/25 disabled:opacity-60 text-rose-200 text-xs sm:text-sm font-bold transition-colors cursor-pointer"
+                  >
+                    <span>🗑️ Retire Kado VirtualDJ</span>
+                  </button>
+
+                  {vdjMissingTable && (
+                    <button
+                      type="button"
+                      onClick={() => setShowSiteSettingsSql((v) => !v)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#1C1F24] border border-amber-500/35 text-amber-200 text-xs font-semibold hover:border-amber-400 transition-colors cursor-pointer"
+                    >
+                      <span>📋 SQL Supabase (`site_settings`)</span>
+                    </button>
+                  )}
+                </div>
+
+                {vdjFeedback && (
+                  <div
+                    className={`rounded-xl border px-3.5 py-2 text-xs sm:text-sm font-semibold ${
+                      vdjFeedback.variant === 'success'
+                        ? 'bg-[#10B981]/15 border-[#10B981]/40 text-emerald-200'
+                        : vdjFeedback.variant === 'warning'
+                          ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+                          : 'bg-[#1C1F24] border-[#363B44] text-[#D1D5DB]'
+                    }`}
+                  >
+                    {vdjFeedback.text}
+                  </div>
+                )}
+
+                {showSiteSettingsSql && vdjMissingTable && !announcementMissingTable && (
+                  <div className="rounded-xl border border-amber-500/30 bg-[#1C1F24] p-3.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-amber-200 font-semibold">
+                        Pou Kado VirtualDJ la sinkronize sou tout aparèy via Supabase, kouri SQL sa a nan Supabase SQL Editor:
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(SITE_SETTINGS_SQL_SNIPPET);
+                          setCopiedSiteSettingsSql(true);
+                          setTimeout(() => setCopiedSiteSettingsSql(false), 2500);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-400/20 text-amber-200 text-xs font-bold hover:bg-amber-400/30 cursor-pointer shrink-0"
+                      >
+                        {copiedSiteSettingsSql ? (
+                          <>
+                            <Check className="h-3.5 w-3.5" />
+                            <span>Kopye!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3.5 w-3.5" />
+                            <span>Kopye SQL</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <pre className="text-[11px] font-mono text-[#D1D5DB] overflow-x-auto whitespace-pre-wrap">
+                      {SITE_SETTINGS_SQL_SNIPPET}
+                    </pre>
+                  </div>
+                )}
               </div>
               )}
 

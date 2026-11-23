@@ -17,6 +17,8 @@ import {
   RefreshCw,
   Smartphone,
   QrCode,
+  Download,
+  Disc3,
 } from 'lucide-react';
 import {
   FolderPlan,
@@ -45,12 +47,20 @@ import {
   USDT_TRC20_WALLET_ADDRESS,
 } from '../data/paymentOrders';
 import { useLanguage } from '../contexts/LanguageContext';
+import {
+  VirtualDjBonusConfig,
+  loadLocalVirtualDjBonus,
+  saveQualifyingVirtualDjOrderUnlocked,
+  triggerVirtualDjDirectDownload,
+} from '../data/virtualDjBonus';
 
 interface DirectCheckoutModalProps {
   isOpen: boolean;
   plan: FolderPlan | null;
   selectedCountryCode: string;
   initialOrderId?: string | null;
+  virtualDjBonus?: VirtualDjBonusConfig;
+  onQualifyingBonusUnlocked?: () => void;
   onClose: () => void;
   onUnlockWithKey: (record: VipKeyRecord) => void;
 }
@@ -60,10 +70,13 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
   plan,
   selectedCountryCode,
   initialOrderId,
+  virtualDjBonus,
+  onQualifyingBonusUnlocked,
   onClose,
   onUnlockWithKey,
 }) => {
   const { t, getPlanText } = useLanguage();
+  const activeVdjBonus = virtualDjBonus ?? loadLocalVirtualDjBonus();
   const [phoneInput, setPhoneInput] = useState('');
   const [natcashSmsInput, setNatcashSmsInput] = useState('');
   const [txIdInput, setTxIdInput] = useState('');
@@ -184,6 +197,16 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
     currentOrder?.transactionId,
     refreshCurrentOrder,
   ]);
+
+  useEffect(() => {
+    if (
+      currentOrder?.status === 'approved' &&
+      (currentOrder.folders >= 21 || currentOrder.planId === 'unlimited-vip')
+    ) {
+      saveQualifyingVirtualDjOrderUnlocked(true);
+      onQualifyingBonusUnlocked?.();
+    }
+  }, [currentOrder?.status, currentOrder?.folders, currentOrder?.planId, onQualifyingBonusUnlocked]);
 
   if (!isOpen || (!plan && !currentOrder)) return null;
 
@@ -326,6 +349,12 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
 
   const renderApprovedKeyView = (order: PaymentOrder) => {
     const orderPlanText = getPlanText(order.planId);
+    const orderQualifiesVirtualDj =
+      order.folders >= 21 || order.planId === 'unlimited-vip';
+    const hasActiveVdjDownload = Boolean(
+      activeVdjBonus.isActive && activeVdjBonus.downloadUrl.trim().length > 0
+    );
+
     return (
       <div className="space-y-5 pt-2">
         <div className="rounded-2xl border border-emerald-400/60 bg-gradient-to-b from-[#10B981]/20 to-[#1C1F24] p-5 text-center space-y-3 shadow-[0_0_32px_rgba(16,185,129,0.22)]">
@@ -391,6 +420,28 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
             <KeyRound className="h-5 w-5 shrink-0" />
             <span>{isUnlockingKey ? t.unlockingBtn : t.unlockAllFoldersNowBtn}</span>
           </button>
+
+          {orderQualifiesVirtualDj && hasActiveVdjDownload && (
+            <div className="rounded-xl border border-[#10B981]/45 bg-[#09291E] p-3.5 text-left space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
+                <Disc3 className="h-4 w-4 shrink-0 text-[#10B981]" />
+                <span>{t.virtualDjIncludedCheckoutNote}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  void triggerVirtualDjDirectDownload(
+                    activeVdjBonus.downloadUrl,
+                    activeVdjBonus.title
+                  )
+                }
+                className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#10B981]/20 border border-[#10B981]/50 hover:bg-[#10B981]/30 text-emerald-200 font-display font-extrabold text-xs sm:text-sm px-4 py-2.5 transition-colors cursor-pointer"
+              >
+                <Download className="h-4 w-4 shrink-0" />
+                <span>{t.virtualDjDownloadBtn}</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -518,6 +569,13 @@ export const DirectCheckoutModal: React.FC<DirectCheckoutModalProps> = ({
             )}
           </h2>
           <p className="text-xs text-[#9CA3AF] mt-0.5">{activePlanSubtitle}</p>
+          {activeVdjBonus.isActive &&
+            (activePlanId !== '10-folder') && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-[#10B981]/15 border border-[#10B981]/35 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+                <Disc3 className="h-3.5 w-3.5 shrink-0" />
+                <span>{t.virtualDjIncludedCheckoutNote}</span>
+              </p>
+            )}
         </div>
 
         {currentOrder?.status === 'approved' && currentOrder.issuedVipKey ? (

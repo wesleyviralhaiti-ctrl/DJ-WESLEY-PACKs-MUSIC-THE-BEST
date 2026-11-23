@@ -151,7 +151,11 @@ export async function fetchSiteAnnouncementRemote(): Promise<{
           (r) =>
             String(r.key ?? r.setting_key ?? r.id ?? '').trim().toLowerCase() ===
             ANNOUNCEMENT_KEY
-        ) || rows[0];
+        ) ||
+        rows.find((r) => {
+          const rowKey = String(r.key ?? r.setting_key ?? r.id ?? '').trim().toLowerCase();
+          return rowKey !== 'virtualdj_bonus';
+        });
 
       if (matched) {
         const mapped = mapRawRowToAnnouncement(matched);

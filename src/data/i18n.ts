@@ -378,6 +378,17 @@ export interface TranslationDictionary {
   iosGuideStep1: string;
   iosGuideStep2: string;
   iosGuideConfirmBtn: string;
+
+  // VirtualDJ Gratis Bonus
+  virtualDjCardBadge: string;
+  virtualDjDefaultTitle: string;
+  virtualDjLockedMsg: string;
+  virtualDjLockedCtaBtn: string;
+  virtualDjUnlockedBadge: string;
+  virtualDjDownloadBtn: string;
+  virtualDjPendingLinkBtn: string;
+  virtualDjDownloadStartedToast: string;
+  virtualDjIncludedCheckoutNote: string;
 }
 
 export const PLAN_TRANSLATIONS: Record<
@@ -782,6 +793,16 @@ export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> 
     iosGuideStep1: '1. Peze bouton Share anba nan mitan Safari a.',
     iosGuideStep2: '2. Desann epi peze Add to Home Screen (Ajoute sou ekran dakèy).',
     iosGuideConfirmBtn: 'Oke, Mwen Konprann',
+
+    virtualDjCardBadge: '🎁 BONUS KADO: VirtualDJ Gratis ak Plan 1,000 HTG / 20 USD+',
+    virtualDjDefaultTitle: 'VirtualDJ Pro PC/Mac — Bonus VIP',
+    virtualDjLockedMsg: '🔒 Pran yon plan ≥ 1,000 HTG (oubyen ≥ 20 USD) pou w debloke VirtualDJ GRATIS!',
+    virtualDjLockedCtaBtn: '🔓 Debloke ak Plan 1,000 HTG / 20 USD+',
+    virtualDjUnlockedBadge: '✅ DEBLOKE AK PLAN VIP OU A',
+    virtualDjDownloadBtn: '⬇️ TELECHAJE VIRTUALDJ GRATIS',
+    virtualDjPendingLinkBtn: '⏳ Admin ap mete lyen VirtualDJ la...',
+    virtualDjDownloadStartedToast: '⬇️ Telechajman VirtualDJ Gratis la lanse!',
+    virtualDjIncludedCheckoutNote: '🎁 BONUS ENKLI: Plan sa a debloke VirtualDJ Gratis touswit!',
   },
 
   en: {
@@ -1029,6 +1050,16 @@ export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> 
     iosGuideStep1: '1. Tap the Share button at the bottom center of Safari.',
     iosGuideStep2: '2. Scroll down and tap Add to Home Screen.',
     iosGuideConfirmBtn: 'Got It',
+
+    virtualDjCardBadge: '🎁 BONUS GIFT: Free VirtualDJ with 1,000 HTG / $20 USD+ Plan',
+    virtualDjDefaultTitle: 'VirtualDJ Pro PC/Mac — VIP Bonus',
+    virtualDjLockedMsg: '🔒 Get any plan ≥ 1,000 HTG (or ≥ $20 USD / €20) to unlock VirtualDJ FREE!',
+    virtualDjLockedCtaBtn: '🔓 Unlock with $20+ VIP Plan',
+    virtualDjUnlockedBadge: '✅ UNLOCKED FOR YOUR VIP PLAN',
+    virtualDjDownloadBtn: '⬇️ DOWNLOAD VIRTUALDJ FREE',
+    virtualDjPendingLinkBtn: '⏳ Admin is preparing the VirtualDJ file...',
+    virtualDjDownloadStartedToast: '⬇️ Free VirtualDJ download started!',
+    virtualDjIncludedCheckoutNote: '🎁 BONUS INCLUDED: This plan unlocks Free VirtualDJ immediately!',
   },
 
   fr: {
@@ -1276,6 +1307,16 @@ export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> 
     iosGuideStep1: '1. Appuyez sur le bouton Partager en bas au centre de Safari.',
     iosGuideStep2: '2. Faites défiler et appuyez sur Sur l’écran d’accueil.',
     iosGuideConfirmBtn: 'Compris',
+
+    virtualDjCardBadge: '🎁 CADEAU BONUS : VirtualDJ Gratuit avec Plan 1 000 HTG / 20 €+',
+    virtualDjDefaultTitle: 'VirtualDJ Pro PC/Mac — Bonus VIP',
+    virtualDjLockedMsg: '🔒 Prenez un forfait ≥ 1 000 HTG (ou ≥ 20 USD / 20 €) pour débloquer VirtualDJ GRATUIT !',
+    virtualDjLockedCtaBtn: '🔓 Débloquer avec un Forfait 20 €+',
+    virtualDjUnlockedBadge: '✅ DÉBLOQUÉ AVEC VOTRE FORFAIT VIP',
+    virtualDjDownloadBtn: '⬇️ TÉLÉCHARGER VIRTUALDJ GRATUIT',
+    virtualDjPendingLinkBtn: '⏳ L’admin prépare le fichier VirtualDJ...',
+    virtualDjDownloadStartedToast: '⬇️ Téléchargement de VirtualDJ Gratuit lancé !',
+    virtualDjIncludedCheckoutNote: '🎁 BONUS INCLUS : Ce forfait débloque VirtualDJ Gratuit immédiatement !',
   },
 
   es: {
@@ -1523,6 +1564,16 @@ export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> 
     iosGuideStep1: '1. Pulsa el botón Compartir abajo en el centro de Safari.',
     iosGuideStep2: '2. Baja y pulsa Añadir a pantalla de inicio.',
     iosGuideConfirmBtn: 'Entendido',
+
+    virtualDjCardBadge: '🎁 REGALO BONUS: VirtualDJ Gratis con Plan 1,000 HTG / $20+',
+    virtualDjDefaultTitle: 'VirtualDJ Pro PC/Mac — Bonus VIP',
+    virtualDjLockedMsg: '🔒 ¡Elige un plan ≥ 1,000 HTG (o ≥ $20 USD / €20) para desbloquear VirtualDJ GRATIS!',
+    virtualDjLockedCtaBtn: '🔓 Desbloquear con Plan $20+',
+    virtualDjUnlockedBadge: '✅ DESBLOQUEADO CON TU PLAN VIP',
+    virtualDjDownloadBtn: '⬇️ DESCARGAR VIRTUALDJ GRATIS',
+    virtualDjPendingLinkBtn: '⏳ El admin está preparando el archivo VirtualDJ...',
+    virtualDjDownloadStartedToast: '⬇️ ¡Descarga de VirtualDJ Gratis iniciada!',
+    virtualDjIncludedCheckoutNote: '🎁 BONUS INCLUIDO: ¡Este plan desbloquea VirtualDJ Gratis al instante!',
   },
 
   pt: {
@@ -1770,6 +1821,16 @@ export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> 
     iosGuideStep1: '1. Toque no botão Compartilhar no centro inferior do Safari.',
     iosGuideStep2: '2. Role para baixo e toque em Adicionar à Tela de Início.',
     iosGuideConfirmBtn: 'Entendi',
+
+    virtualDjCardBadge: '🎁 BÔNUS GRÁTIS: VirtualDJ Grátis no Plano 1.000 HTG / $20+',
+    virtualDjDefaultTitle: 'VirtualDJ Pro PC/Mac — Bônus VIP',
+    virtualDjLockedMsg: '🔒 Escolha um plano ≥ 1.000 HTG (ou ≥ $20 USD / €20) para liberar o VirtualDJ GRÁTIS!',
+    virtualDjLockedCtaBtn: '🔓 Liberar com Plano $20+',
+    virtualDjUnlockedBadge: '✅ LIBERADO NO SEU PLANO VIP',
+    virtualDjDownloadBtn: '⬇️ BAIXAR VIRTUALDJ GRÁTIS',
+    virtualDjPendingLinkBtn: '⏳ O admin está preparando o arquivo VirtualDJ...',
+    virtualDjDownloadStartedToast: '⬇️ Download do VirtualDJ Grátis iniciado!',
+    virtualDjIncludedCheckoutNote: '🎁 BÔNUS INCLUSO: Este plano libera o VirtualDJ Grátis na hora!',
   },
 
   ar: {
@@ -2017,5 +2078,15 @@ export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> 
     iosGuideStep1: '1. اضغط على زر المشاركة أسفل متصفح Safari.',
     iosGuideStep2: '2. مرر للأسفل واضغط على إضافة إلى الشاشة الرئيسية.',
     iosGuideConfirmBtn: 'فهمت',
+
+    virtualDjCardBadge: '🎁 هدية مجانية: VirtualDJ مجاناً مع خطة 1,000 HTG / $20+',
+    virtualDjDefaultTitle: 'VirtualDJ Pro PC/Mac — مكافأة VIP',
+    virtualDjLockedMsg: '🔒 اختر خطة ≥ 1,000 HTG (أو ≥ 20 دولار) لفتح برنامج VirtualDJ مجاناً!',
+    virtualDjLockedCtaBtn: '🔓 تفعيل مع خطة $20+',
+    virtualDjUnlockedBadge: '✅ مفعّل لخطة VIP الخاصة بك',
+    virtualDjDownloadBtn: '⬇️ تحميل VIRTUALDJ مجاناً',
+    virtualDjPendingLinkBtn: '⏳ يقوم المسؤول بتجهيز ملف VirtualDJ...',
+    virtualDjDownloadStartedToast: '⬇️ بدأ تحميل VirtualDJ المجاني!',
+    virtualDjIncludedCheckoutNote: '🎁 مكافأة مشمولة: هذه الخطة تفتح VirtualDJ مجاناً فوراً!',
   },
 };

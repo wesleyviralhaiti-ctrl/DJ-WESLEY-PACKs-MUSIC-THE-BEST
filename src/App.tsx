@@ -79,6 +79,17 @@ import {
   loadLocalSiteAnnouncement,
   subscribeSiteAnnouncementRealtime,
 } from './data/siteAnnouncement';
+import { VirtualDjBonusCard } from './components/VirtualDjBonusCard';
+import {
+  VirtualDjBonusConfig,
+  fetchVirtualDjBonusRemote,
+  hasVirtualDjBonusAccess,
+  isQualifyingVirtualDjKey,
+  loadLocalVirtualDjBonus,
+  loadQualifyingVirtualDjOrderUnlocked,
+  saveQualifyingVirtualDjOrderUnlocked,
+  subscribeVirtualDjBonusRealtime,
+} from './data/virtualDjBonus';
 
 const ADMIN_SESSION_STORAGE_KEY = 'wesley_admin_auth_session_v1';
 
@@ -141,6 +152,12 @@ export default function App() {
   const [catalogSearch, setCatalogSearch] = useState<string>('');
   const [siteAnnouncement, setSiteAnnouncement] = useState<SiteAnnouncement>(() =>
     loadLocalSiteAnnouncement()
+  );
+  const [virtualDjBonus, setVirtualDjBonus] = useState<VirtualDjBonusConfig>(() =>
+    loadLocalVirtualDjBonus()
+  );
+  const [qualifyingOrderBonusUnlocked, setQualifyingOrderBonusUnlocked] = useState<boolean>(() =>
+    loadQualifyingVirtualDjOrderUnlocked()
   );
 
   const handleSelectCountry = useCallback(
@@ -245,6 +262,25 @@ export default function App() {
     return () => {
       active = false;
       unsubscribeAnnouncement();
+    };
+  }, []);
+
+  // Fetch & subscribe to VirtualDJ Gratis Bonus config (Supabase + instant localStorage sync)
+  useEffect(() => {
+    let active = true;
+    void fetchVirtualDjBonusRemote().then((res) => {
+      if (active) {
+        setVirtualDjBonus(res.bonus);
+      }
+    });
+    const unsubscribeVdj = subscribeVirtualDjBonusRealtime((updated) => {
+      if (active) {
+        setVirtualDjBonus(updated);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribeVdj();
     };
   }, []);
 
@@ -432,6 +468,10 @@ export default function App() {
         setIsWelcomeOpen(false);
         setIsExhaustedOpen(false);
         setIsDirectCheckoutOpen(true);
+        if (order.folders >= 21 || order.planId === 'unlimited-vip') {
+          saveQualifyingVirtualDjOrderUnlocked(true);
+          setQualifyingOrderBonusUnlocked(true);
+        }
         // Mark as surfaced so closing the modal won't forcefully re-open it later
         saveActiveCheckoutOrderId(null);
         void markCurrentVisitorPurchasedRemote().then((updated) => {
@@ -490,6 +530,10 @@ export default function App() {
     (record: VipKeyRecord) => {
       window.localStorage.setItem(ACTIVE_KEY_STORAGE_KEY, record.code);
       setActiveKey(record);
+      if (isQualifyingVirtualDjKey(record)) {
+        saveQualifyingVirtualDjOrderUnlocked(true);
+        setQualifyingOrderBonusUnlocked(true);
+      }
       void markCurrentVisitorPurchasedRemote().then((updated) => {
         if (updated) setVisitorProfile(updated);
       });
@@ -784,6 +828,11 @@ export default function App() {
   const hasActiveAnnouncement = Boolean(
     siteAnnouncement.isActive && siteAnnouncement.message.trim().length > 0
   );
+  const isVirtualDjBonusUnlocked = hasVirtualDjBonusAccess({
+    activeKey,
+    qualifyingOrderUnlocked: qualifyingOrderBonusUnlocked,
+    isAdminFreeMode: isAdminAuthenticated && isAdminFreeMode,
+  });
 
   return (
     <div className="min-h-[100dvh] pb-[env(safe-area-inset-bottom)] bg-[#1C1F24] text-[#F3F4F6] flex flex-col">
@@ -1071,6 +1120,17 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {/* VirtualDJ Gratis Bonus Banner (Auto-unlocks for Plan >= 1,000 HTG / >= 20 USD) */}
+        <VirtualDjBonusCard
+          bonus={virtualDjBonus}
+          isUnlocked={isVirtualDjBonusUnlocked}
+          onUnlockPlansClick={() => {
+            setPendingPack(null);
+            setIsWelcomeOpen(true);
+          }}
+          onDownloadStartedToast={(msg) => showToast(msg, 'success')}
+        />
 
         {/* Viral Referral Program Card ("🎁 PATAJE & GANYEN 1 FOLDER GRATIS") */}
         {visitorProfile && (
@@ -1480,6 +1540,8 @@ export default function App() {
         plan={checkoutPlan}
         selectedCountryCode={selectedCountryCode}
         initialOrderId={activeOrderId}
+        virtualDjBonus={virtualDjBonus}
+        onQualifyingBonusUnlocked={() => setQualifyingOrderBonusUnlocked(true)}
         onClose={() => {
           setIsDirectCheckoutOpen(false);
           setActiveOrderId(loadActiveCheckoutOrderId());
