@@ -8,9 +8,11 @@ import {
   VipKeyRecord,
 } from './musicPacks';
 import {
+  isTransientSupabaseError,
   supabase,
   SupabaseNatcashReceiptRow,
   SupabasePaymentRow,
+  withSupabaseRetry,
 } from '../lib/supabase';
 import { markCurrentVisitorPurchasedRemote } from './visitors';
 
@@ -788,15 +790,35 @@ function upsertLocalPaymentOrderCache(order: PaymentOrder): void {
   }
 }
 
-export async function fetchPaymentOrdersRemote(): Promise<PaymentOrder[]> {
+export interface FetchPaymentOrdersResult {
+  orders: PaymentOrder[];
+  connected: boolean;
+  errorMessage?: string;
+  errorCode?: string;
+}
+
+export async function fetchPaymentOrdersFromSupabaseDirect(): Promise<FetchPaymentOrdersResult> {
   try {
-    const { data, error } = await supabase
-      .from('payments')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const { data, error } = await withSupabaseRetry(
+      async () =>
+        supabase
+          .from('payments')
+          .select('*')
+          .order('created_at', { ascending: false }),
+      {
+        attempts: 3,
+        delayMs: 350,
+        shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+      }
+    );
 
     if (error || !data) {
-      return loadPaymentOrders();
+      return {
+        orders: loadPaymentOrders(),
+        connected: false,
+        errorMessage: error?.message || 'Echèk chajman peman yo sou Supabase',
+        errorCode: error?.code,
+      };
     }
 
     const mapped = (data as SupabasePaymentRow[]).map(mapSupabasePaymentToOrder);
@@ -805,10 +827,22 @@ export async function fetchPaymentOrdersRemote(): Promise<PaymentOrder[]> {
     } catch {
       // ignore storage errors
     }
-    return mapped;
-  } catch {
-    return loadPaymentOrders();
+    return {
+      orders: mapped,
+      connected: true,
+    };
+  } catch (err: any) {
+    return {
+      orders: loadPaymentOrders(),
+      connected: false,
+      errorMessage: err?.message || 'Echèk koneksyon ak Supabase',
+    };
   }
+}
+
+export async function fetchPaymentOrdersRemote(): Promise<PaymentOrder[]> {
+  const res = await fetchPaymentOrdersFromSupabaseDirect();
+  return res.orders;
 }
 
 export async function fetchPaymentOrderByIdRemote(

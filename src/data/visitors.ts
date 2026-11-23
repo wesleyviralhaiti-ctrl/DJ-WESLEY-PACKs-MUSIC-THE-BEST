@@ -10,7 +10,9 @@ import {
   SUPABASE_ANON_KEY,
   SUPABASE_URL,
   SupabaseVisitorRow,
+  isTransientSupabaseError,
   supabaseClient,
+  withSupabaseRetry,
 } from '../lib/supabase';
 
 export const VISITOR_PROFILE_STORAGE_KEY = 'wesley_visitor_profile_v1';
@@ -715,10 +717,18 @@ export function markVisitorOfflineKeepalive(visitorSessionId: string): void {
 
 export async function fetchVisitorsFromSupabaseDirect(): Promise<FetchVisitorsResult> {
   try {
-    const { data, error } = await supabaseClient
-      .from('visitors')
-      .select('*')
-      .order('last_seen_at', { ascending: false });
+    const { data, error } = await withSupabaseRetry(
+      async () =>
+        supabaseClient
+          .from('visitors')
+          .select('*')
+          .order('last_seen_at', { ascending: false }),
+      {
+        attempts: 3,
+        delayMs: 350,
+        shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+      }
+    );
 
     if (error) {
       console.warn('[Supabase visitors select]', error.code, error.message);
@@ -881,10 +891,18 @@ export async function fetchReferralProgressRemote(
   }
 
   try {
-    const [referredRes, ownRes] = await Promise.all([
-      supabaseClient.from('visitors').select('*').eq('referred_by', refCode),
-      supabaseClient.from('visitors').select('*').eq('session_id', visitor.sessionId).maybeSingle(),
-    ]);
+    const [referredRes, ownRes] = await withSupabaseRetry(
+      () =>
+        Promise.all([
+          supabaseClient.from('visitors').select('*').eq('referred_by', refCode),
+          supabaseClient.from('visitors').select('*').eq('session_id', visitor.sessionId).maybeSingle(),
+        ]),
+      {
+        attempts: 3,
+        delayMs: 350,
+        shouldRetryResult: ([r1]) => Boolean(r1.error && isTransientSupabaseError(r1.error)),
+      }
+    );
 
     if (referredRes.error) {
       return {

@@ -48,6 +48,7 @@ import {
   deleteVipKeyRecordRemote,
   exportCurrentFoldersJson,
   fetchAllVipKeysRemote,
+  fetchRemoteMusicPacks,
   fetchVipKeysFromSupabaseDirect,
   formatZipFolderFilename,
   generateShortSecretCode,
@@ -75,6 +76,7 @@ import {
 import {
   approvePaymentOrderRemote,
   deletePaymentOrderRemote,
+  fetchPaymentOrdersFromSupabaseDirect,
   fetchPaymentOrdersRemote,
   insertNatcashSmsReceiptRemote,
   isValidTronTxHash,
@@ -85,7 +87,12 @@ import {
   rejectPaymentOrderRemote,
   subscribeAllPaymentsRealtime,
 } from '../data/paymentOrders';
-import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from '../lib/supabase';
+import {
+  SUPABASE_ANON_KEY,
+  SUPABASE_URL,
+  isTransientSupabaseError,
+  supabase,
+} from '../lib/supabase';
 import { getCountryByCode } from '../data/countries';
 import {
   VisitorProfile,
@@ -318,6 +325,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     checking: true,
     lastSyncedAt: null,
   });
+  const [supabasePaymentsStatus, setSupabasePaymentsStatus] = useState<{
+    connected: boolean;
+    checking: boolean;
+    errorMessage?: string;
+    errorCode?: string;
+  }>({
+    connected: false,
+    checking: true,
+  });
+  const [isReconnectingSupabase, setIsReconnectingSupabase] = useState<boolean>(false);
   const [copiedSqlGrant, setCopiedSqlGrant] = useState<boolean>(false);
 
   // Customer Coming-Soon Pack Requests ("🔔 Mande Pake Sa a")
@@ -338,6 +355,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       errorMessage: res.errorMessage,
       errorCode: res.errorCode,
     }));
+    return res;
   };
 
   const syncKeysFromSupabase = async () => {
@@ -350,6 +368,39 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       errorCode: res.errorCode,
     });
     return res;
+  };
+
+  const syncOrdersFromSupabase = async () => {
+    const res = await fetchPaymentOrdersFromSupabaseDirect();
+    setPaymentOrders(res.orders);
+    setSupabasePaymentsStatus({
+      connected: res.connected,
+      checking: false,
+      errorMessage: res.errorMessage,
+      errorCode: res.errorCode,
+    });
+    return res;
+  };
+
+  const handleReconnectSupabase = async () => {
+    if (isReconnectingSupabase) return;
+    setIsReconnectingSupabase(true);
+    setSupabaseVisitorsStatus((prev) => ({ ...prev, checking: true, errorMessage: undefined }));
+    setSupabaseKeysStatus((prev) => ({ ...prev, checking: true, errorMessage: undefined }));
+    setSupabasePaymentsStatus((prev) => ({ ...prev, checking: true, errorMessage: undefined }));
+
+    try {
+      const [, , , remoteRequests] = await Promise.all([
+        syncKeysFromSupabase(),
+        syncOrdersFromSupabase(),
+        syncVisitorsFromSupabase(),
+        fetchAllPackRequestsRemote(),
+        fetchRemoteMusicPacks().then(() => onCustomPacksChanged()),
+      ]);
+      setPackRequests(remoteRequests);
+    } finally {
+      setIsReconnectingSupabase(false);
+    }
   };
 
   useEffect(() => {
@@ -366,7 +417,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       setOnlineNowMs(Date.now());
 
       void syncKeysFromSupabase();
-      void fetchPaymentOrdersRemote().then((remoteOrders) => setPaymentOrders(remoteOrders));
+      void syncOrdersFromSupabase();
       void syncVisitorsFromSupabase();
       void fetchAllPackRequestsRemote().then((remoteReqs) => setPackRequests(remoteReqs));
     }
@@ -380,14 +431,20 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     if (!isOpen || !isAuthenticated) return;
 
     const refreshFromSupabase = async () => {
-      const [remoteOrders, remoteKeysResult, remoteVisitorsResult, remoteRequests] =
+      const [remoteOrdersResult, remoteKeysResult, remoteVisitorsResult, remoteRequests] =
         await Promise.all([
-          fetchPaymentOrdersRemote(),
+          fetchPaymentOrdersFromSupabaseDirect(),
           fetchVipKeysFromSupabaseDirect(),
           fetchVisitorsFromSupabaseDirect(),
           fetchAllPackRequestsRemote(),
         ]);
-      setPaymentOrders(remoteOrders);
+      setPaymentOrders(remoteOrdersResult.orders);
+      setSupabasePaymentsStatus({
+        connected: remoteOrdersResult.connected,
+        checking: false,
+        errorMessage: remoteOrdersResult.errorMessage,
+        errorCode: remoteOrdersResult.errorCode,
+      });
       setKeys(remoteKeysResult.keys);
       setSupabaseKeysStatus({
         connected: remoteKeysResult.connected,
@@ -408,7 +465,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     };
 
     const unsubscribePayments = subscribeAllPaymentsRealtime(() => {
-      void fetchPaymentOrdersRemote().then((remoteOrders) => setPaymentOrders(remoteOrders));
+      void syncOrdersFromSupabase();
     });
     const unsubscribeKeys = subscribeVipKeysRealtime(() => {
       void syncKeysFromSupabase();
@@ -2961,9 +3018,32 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   <div className="rounded-xl bg-[#202429] border border-[#10B981]/30 p-5 space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
-                        <h3 className="font-display text-base sm:text-lg font-bold text-[#F3F4F6]">
-                          💳 Kòmand &amp; Peman Kliyan (Natcash Ayiti &amp; USDT TRC20)
-                        </h3>
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <h3 className="font-display text-base sm:text-lg font-bold text-[#F3F4F6]">
+                            💳 Kòmand &amp; Peman Kliyan (Natcash Ayiti &amp; USDT TRC20)
+                          </h3>
+                          {supabasePaymentsStatus.connected ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#10B981]/20 border border-[#10B981]/50 px-3 py-0.5 text-[11px] font-extrabold text-emerald-300">
+                              🟢 Supabase Konekte
+                            </span>
+                          ) : supabasePaymentsStatus.checking ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 border border-amber-400/40 px-3 py-0.5 text-[11px] font-bold text-amber-200">
+                              ⏳ Ap konekte ak Supabase...
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/20 border border-rose-500/50 px-3 py-0.5 text-[11px] font-extrabold text-rose-200">
+                              🔴 Supabase Pa Konekte
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleReconnectSupabase()}
+                            disabled={isReconnectingSupabase}
+                            className="inline-flex items-center gap-1 rounded-full bg-[#1C1F24] border border-[#363B44] hover:border-[#10B981]/60 px-2.5 py-0.5 text-[11px] font-bold text-[#D1D5DB] hover:text-emerald-300 disabled:opacity-60 transition-colors cursor-pointer"
+                          >
+                            <span>{isReconnectingSupabase ? '⏳ Ap rekonekte...' : '🔄 Rekonekte'}</span>
+                          </button>
+                        </div>
                         <p className="text-xs text-[#9CA3AF] mt-1">
                           Verifye kòd tranzaksyon Natcash (+509 56568810) oswa TxID USDT TRC20 yo,
                           epi klike « ✔ Valide &amp; Voye Kle VIP » pou debloke ekran kliyan an
@@ -3446,6 +3526,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                               🔴 Supabase Pa Konekte
                             </span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => void handleReconnectSupabase()}
+                            disabled={isReconnectingSupabase}
+                            className="inline-flex items-center gap-1 rounded-full bg-[#1C1F24] border border-[#363B44] hover:border-[#10B981]/60 px-2.5 py-0.5 text-[11px] font-bold text-[#D1D5DB] hover:text-emerald-300 disabled:opacity-60 transition-colors cursor-pointer"
+                          >
+                            <span>{isReconnectingSupabase ? '⏳ Ap rekonekte...' : '🔄 Rekonekte'}</span>
+                          </button>
                         </div>
                         <p className="text-xs text-[#9CA3AF] mt-1">
                           Lis tout vizitè ki verifye non yo, peyi yo, ak vrè nimewo telefòn yo
@@ -3484,39 +3572,66 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       !supabaseVisitorsStatus.checking &&
                       supabaseVisitorsStatus.errorMessage && (
                         <div className="rounded-xl bg-rose-500/10 border border-rose-500/45 p-4 space-y-2.5 text-xs">
-                          <div className="flex items-start gap-2 text-rose-200 font-semibold">
-                            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-400" />
-                            <div>
-                              <p>
-                                Erè Supabase ({supabaseVisitorsStatus.errorCode || 'SQL'}):{' '}
-                                <span className="font-mono">{supabaseVisitorsStatus.errorMessage}</span>
-                              </p>
-                              <p className="text-[#D1D5DB] font-normal mt-1">
-                                Pou tout telefòn parèt an dirèk sou laptop ou a, kouri kòmand SQL sa a
-                                nan Supabase SQL Editor (pou bay kle piblik la pèmisyon sou tab la):
-                              </p>
+                          <div className="flex items-start justify-between gap-2 text-rose-200 font-semibold">
+                            <div className="flex items-start gap-2">
+                              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-400" />
+                              <div>
+                                {isTransientSupabaseError({
+                                  message: supabaseVisitorsStatus.errorMessage,
+                                  code: supabaseVisitorsStatus.errorCode,
+                                }) ? (
+                                  <>
+                                    <p>
+                                      Koneksyon entènèt la fèb oswa koupe tanporèman aprè 3 tantativ.
+                                    </p>
+                                    <p className="text-[#D1D5DB] font-normal mt-1">
+                                      Verifye rezo Wi-Fi / done mobil ou a epi klike sou « 🔄
+                                      Rekonekte ».
+                                    </p>
+                                  </>
+                                ) : (
+                                  <>
+                                    <p>
+                                      Erè Supabase ({supabaseVisitorsStatus.errorCode || 'SQL'}):{' '}
+                                      <span className="font-mono">
+                                        {supabaseVisitorsStatus.errorMessage}
+                                      </span>
+                                    </p>
+                                    <p className="text-[#D1D5DB] font-normal mt-1">
+                                      Pou tout telefòn parèt an dirèk sou laptop ou a, kouri kòmand
+                                      SQL sa a nan Supabase SQL Editor (pou bay kle piblik la
+                                      pèmisyon sou tab la):
+                                    </p>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           </div>
-                          <div className="flex items-center justify-between gap-2 rounded-lg bg-[#1C1F24] border border-[#363B44] p-2.5">
-                            <code className="font-mono text-[11px] text-emerald-300 break-all">
-                              GRANT USAGE ON SCHEMA public TO anon, authenticated; GRANT SELECT,
-                              INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon,
-                              authenticated;
-                            </code>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void copyPlainText(
-                                  'GRANT USAGE ON SCHEMA public TO anon, authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated;'
-                                );
-                                setCopiedSqlGrant(true);
-                                window.setTimeout(() => setCopiedSqlGrant(false), 2500);
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg bg-[#10B981] text-[#0B1410] text-[11px] font-extrabold whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              {copiedSqlGrant ? '✔ Kopye!' : 'Kopye SQL'}
-                            </button>
-                          </div>
+                          {!isTransientSupabaseError({
+                            message: supabaseVisitorsStatus.errorMessage,
+                            code: supabaseVisitorsStatus.errorCode,
+                          }) && (
+                            <div className="flex items-center justify-between gap-2 rounded-lg bg-[#1C1F24] border border-[#363B44] p-2.5">
+                              <code className="font-mono text-[11px] text-emerald-300 break-all">
+                                GRANT USAGE ON SCHEMA public TO anon, authenticated; GRANT SELECT,
+                                INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon,
+                                authenticated;
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void copyPlainText(
+                                    'GRANT USAGE ON SCHEMA public TO anon, authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated;'
+                                  );
+                                  setCopiedSqlGrant(true);
+                                  window.setTimeout(() => setCopiedSqlGrant(false), 2500);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-[#10B981] text-[#0B1410] text-[11px] font-extrabold whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                {copiedSqlGrant ? '✔ Kopye!' : 'Kopye SQL'}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -4119,9 +4234,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/20 border border-rose-500/50 px-3 py-0.5 text-[11px] font-extrabold text-rose-200">
-                              🔴 Supabase Erè
+                              🔴 Supabase Pa Konekte
                             </span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => void handleReconnectSupabase()}
+                            disabled={isReconnectingSupabase}
+                            className="inline-flex items-center gap-1 rounded-full bg-[#1C1F24] border border-[#363B44] hover:border-[#10B981]/60 px-2.5 py-0.5 text-[11px] font-bold text-[#D1D5DB] hover:text-emerald-300 disabled:opacity-60 transition-colors cursor-pointer"
+                          >
+                            <span>{isReconnectingSupabase ? '⏳ Ap rekonekte...' : '🔄 Rekonekte'}</span>
+                          </button>
                         </div>
                         <p className="text-xs sm:text-sm text-[#D1D5DB] mt-1">
                           Klike sou nenpòt plan anba a pou w jenere yon kòd VIP kout (ex:{' '}
@@ -4136,30 +4259,42 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       !supabaseKeysStatus.checking &&
                       supabaseKeysStatus.errorMessage && (
                         <div className="rounded-xl bg-rose-500/10 border border-rose-500/45 p-4 space-y-2 text-xs">
-                          <p className="text-rose-200 font-semibold">
-                            ⚠️ Supabase ({supabaseKeysStatus.errorCode || 'SQL'}):{' '}
-                            <span className="font-mono">{supabaseKeysStatus.errorMessage}</span>
-                          </p>
-                          <div className="flex items-center justify-between gap-2 rounded-lg bg-[#1C1F24] border border-[#363B44] p-2.5">
-                            <code className="font-mono text-[11px] text-emerald-300 break-all">
-                              GRANT USAGE ON SCHEMA public TO anon, authenticated; GRANT SELECT,
-                              INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon,
-                              authenticated;
-                            </code>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void copyPlainText(
-                                  'GRANT USAGE ON SCHEMA public TO anon, authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated;'
-                                );
-                                setCopiedSqlGrant(true);
-                                window.setTimeout(() => setCopiedSqlGrant(false), 2500);
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg bg-[#10B981] text-[#0B1410] text-[11px] font-extrabold whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              {copiedSqlGrant ? '✔ Kopye!' : 'Kopye SQL'}
-                            </button>
-                          </div>
+                          {isTransientSupabaseError({
+                            message: supabaseKeysStatus.errorMessage,
+                            code: supabaseKeysStatus.errorCode,
+                          }) ? (
+                            <p className="text-rose-200 font-semibold">
+                              ⚠️ Koneksyon entènèt la fèb oswa koupe tanporèman aprè 3 tantativ.
+                              Klike sou « 🔄 Rekonekte » lè rezo a tounen.
+                            </p>
+                          ) : (
+                            <>
+                              <p className="text-rose-200 font-semibold">
+                                ⚠️ Supabase ({supabaseKeysStatus.errorCode || 'SQL'}):{' '}
+                                <span className="font-mono">{supabaseKeysStatus.errorMessage}</span>
+                              </p>
+                              <div className="flex items-center justify-between gap-2 rounded-lg bg-[#1C1F24] border border-[#363B44] p-2.5">
+                                <code className="font-mono text-[11px] text-emerald-300 break-all">
+                                  GRANT USAGE ON SCHEMA public TO anon, authenticated; GRANT SELECT,
+                                  INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon,
+                                  authenticated;
+                                </code>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void copyPlainText(
+                                      'GRANT USAGE ON SCHEMA public TO anon, authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated;'
+                                    );
+                                    setCopiedSqlGrant(true);
+                                    window.setTimeout(() => setCopiedSqlGrant(false), 2500);
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg bg-[#10B981] text-[#0B1410] text-[11px] font-extrabold whitespace-nowrap shrink-0 cursor-pointer"
+                                >
+                                  {copiedSqlGrant ? '✔ Kopye!' : 'Kopye SQL'}
+                                </button>
+                              </div>
+                            </>
+                          )}
                         </div>
                       )}
 

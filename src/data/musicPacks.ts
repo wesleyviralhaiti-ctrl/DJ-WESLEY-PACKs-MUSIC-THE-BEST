@@ -1,5 +1,10 @@
 import customDefaultFoldersJson from './customDefaultFolders.json';
-import { supabaseClient, SupabaseVipKeyRow } from '../lib/supabase';
+import {
+  isTransientSupabaseError,
+  supabaseClient,
+  SupabaseVipKeyRow,
+  withSupabaseRetry,
+} from '../lib/supabase';
 import { hasUploadedMp3Buffer } from '../utils/audioAnalyzer';
 
 export interface TrackItem {
@@ -588,13 +593,28 @@ export interface FetchVipKeysResult {
 
 export async function fetchVipKeysFromSupabaseDirect(): Promise<FetchVipKeysResult> {
   try {
-    let { data, error } = await supabaseClient
-      .from('vip_keys')
-      .select('*')
-      .order('created_at', { ascending: false });
+    let { data, error } = await withSupabaseRetry(
+      async () =>
+        supabaseClient
+          .from('vip_keys')
+          .select('*')
+          .order('created_at', { ascending: false }),
+      {
+        attempts: 3,
+        delayMs: 350,
+        shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+      }
+    );
 
     if (error && (error.code === '42703' || /created_at/i.test(error.message))) {
-      const retry = await supabaseClient.from('vip_keys').select('*');
+      const retry = await withSupabaseRetry(
+        async () => supabaseClient.from('vip_keys').select('*'),
+        {
+          attempts: 3,
+          delayMs: 350,
+          shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+        }
+      );
       data = retry.data;
       error = retry.error;
     }
@@ -650,12 +670,20 @@ async function queryVipKeyFromSupabaseDirect(rawCode: string): Promise<{
     };
   }
 
-  // 1. Try direct match on key_code first
-  const directRes = await supabaseClient
-    .from('vip_keys')
-    .select('*')
-    .eq('key_code', normalized)
-    .maybeSingle();
+  // 1. Try direct match on key_code first (with 3-attempt silent retry)
+  const directRes = await withSupabaseRetry(
+    async () =>
+      supabaseClient
+        .from('vip_keys')
+        .select('*')
+        .eq('key_code', normalized)
+        .maybeSingle(),
+    {
+      attempts: 3,
+      delayMs: 350,
+      shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+    }
+  );
 
   if (!directRes.error && directRes.data) {
     const row = directRes.data as SupabaseVipKeyRow;
@@ -668,7 +696,14 @@ async function queryVipKeyFromSupabaseDirect(rawCode: string): Promise<{
   }
 
   // 2. Try case/whitespace-insensitive scan (SELECT * FROM vip_keys) matching upper(trim(key_code)) = $1
-  const scanRes = await supabaseClient.from('vip_keys').select('*');
+  const scanRes = await withSupabaseRetry(
+    async () => supabaseClient.from('vip_keys').select('*'),
+    {
+      attempts: 3,
+      delayMs: 350,
+      shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+    }
+  );
 
   if (scanRes.error) {
     console.warn('[Supabase vip_keys lookup]', scanRes.error.code, scanRes.error.message);
@@ -1964,14 +1999,29 @@ function mapSupabasePackRow(row: any): MusicPack {
 
 async function selectAllRowsSafe(tableName: 'folders' | 'music_packs'): Promise<any[]> {
   try {
-    const ordered = await supabaseClient
-      .from(tableName)
-      .select('*')
-      .order('created_at', { ascending: false });
+    const ordered = await withSupabaseRetry(
+      async () =>
+        supabaseClient
+          .from(tableName)
+          .select('*')
+          .order('created_at', { ascending: false }),
+      {
+        attempts: 3,
+        delayMs: 350,
+        shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+      }
+    );
     if (!ordered.error && Array.isArray(ordered.data)) {
       return ordered.data;
     }
-    const plain = await supabaseClient.from(tableName).select('*');
+    const plain = await withSupabaseRetry(
+      async () => supabaseClient.from(tableName).select('*'),
+      {
+        attempts: 3,
+        delayMs: 350,
+        shouldRetryResult: (res) => Boolean(res.error && isTransientSupabaseError(res.error)),
+      }
+    );
     if (!plain.error && Array.isArray(plain.data)) {
       return plain.data;
     }
